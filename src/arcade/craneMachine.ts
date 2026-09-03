@@ -231,7 +231,11 @@ export type Crane = {
   advanceRetries: number;
 };
 
-export const ARM_TOP = 210;
+/**
+ * アームの最高高さ。投影後に画面の上端からはみ出さない値にすること。
+ * 大きすぎるとアームのヘッドが画面外に消えて、何が起きているか分からなくなる。
+ */
+export const ARM_TOP = 168;
 const ARM_SPEED_Y = 320;
 const ARM_SPEED_X = 260;
 const NUDGE_SPEED = 150;

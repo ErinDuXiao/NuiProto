@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ArcadeScreen } from "./arcade/ArcadeScreen";
 import { ShelfScreen } from "./shelf/ShelfScreen";
 import { store } from "./state/store";
 
@@ -13,32 +14,15 @@ export function App() {
 
   return (
     <div className="app">
-      {screen === "shelf" && (
+      {screen === "shelf" ? (
         <ShelfScreen
           onGoArcade={() => setScreen("arcade")}
           onShare={() => {
             /* Task 11 で実装する */
           }}
         />
-      )}
-      {screen === "arcade" && (
-        <div className="screen" style={{ padding: 24 }}>
-          <p>ゲームセンターは Task 8 で作る。</p>
-          <button className="btn" onClick={() => setScreen("shelf")}>
-            棚へもどる
-          </button>
-          {/* Task 8 でクレーンが繋がったら消す、演出確認用の暫定ボタン */}
-          <button
-            className="btn primary"
-            style={{ marginTop: 12 }}
-            onClick={() => {
-              store.winPlush("rabbit_01");
-              setScreen("shelf");
-            }}
-          >
-            （開発用）新しい子を迎える
-          </button>
-        </div>
+      ) : (
+        <ArcadeScreen onGoShelf={() => setScreen("shelf")} debugPhysics={false} />
       )}
     </div>
   );

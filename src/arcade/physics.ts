@@ -62,13 +62,18 @@ export function rollSpeedFor(s: number): number {
   return Math.max(0, s) * ROLL_DECAY_K * 1.06;
 }
 
-/** 手前中央にシュート、奥に景品を並べる想定の既定盤面。 */
+/**
+ * 既定の盤面。手前左にシュート、奥に景品を並べる。
+ *
+ * 幅は画面 (320px) より狭くしてある。奥行きの投影で右へずれる分と
+ * 景品の半径を足しても画面からはみ出さないようにするため。
+ */
 export const DEFAULT_PIT: Pit = {
   minX: 0,
-  maxX: 320,
+  maxX: 236,
   minZ: 0,
-  maxZ: 180,
-  exit: { x: 46, z: 24, r: 34 },
+  maxZ: 176,
+  exit: { x: 34, z: 18, r: 34 },
 };
 
 export type StepResult = {
