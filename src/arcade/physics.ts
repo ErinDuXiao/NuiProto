@@ -47,6 +47,29 @@ const BOUNCE_CUTOFF = 40;
 const MAX_DT = 1 / 50;
 
 /**
+ * 速度の上限 (px/s)。
+ * 上限が無いと、巨大な値から位置が Infinity になり、
+ * 差を取った時点で NaN になって盤面全体に伝播する。
+ */
+const MAX_SPEED = 4000;
+
+/** 非有限や過大な速度を安全な範囲へ丸める。 */
+function sanitize(b: Body): void {
+  if (!Number.isFinite(b.x)) b.x = 0;
+  if (!Number.isFinite(b.y)) b.y = 0;
+  if (!Number.isFinite(b.z)) b.z = 0;
+  if (!Number.isFinite(b.spin)) b.spin = 0;
+  b.vx = clampSpeed(b.vx);
+  b.vy = clampSpeed(b.vy);
+  b.vz = clampSpeed(b.vz);
+}
+
+function clampSpeed(v: number): number {
+  if (!Number.isFinite(v)) return 0;
+  return Math.min(MAX_SPEED, Math.max(-MAX_SPEED, v));
+}
+
+/**
  * 接地中の減衰係数 k。v(t) = v0 * e^(-kt) となる。
  * 床を距離 s だけ転がすのに必要な初速は v0 = s * k。
  *
@@ -108,13 +131,14 @@ export function atRest(bodies: Body[]): boolean {
  * step と tickCrane の両方を回す（責務の分離。craneMachine.ts 参照）。
  */
 export function step(bodies: Body[], pit: Pit, dt: number): StepResult {
-  const h = Math.min(Math.max(dt, 0), MAX_DT);
+  const h = Math.min(Math.max(Number.isFinite(dt) ? dt : 0, 0), MAX_DT);
   const fallen: string[] = [];
   let impacts = 0;
 
-  // 積分
+  // 積分。まず値を安全な範囲に丸めてから進める
   for (const b of bodies) {
     if (b.held) continue;
+    sanitize(b);
     b.vy -= GRAVITY * h;
     b.x += b.vx * h;
     b.y += b.vy * h;
@@ -200,6 +224,11 @@ export function step(bodies: Body[], pit: Pit, dt: number): StepResult {
       b.z = pit.maxZ;
       if (b.vz > 0) b.vz = -b.vz * RESTITUTION;
     }
+  }
+
+  // 最後にもう一度丸めて、次のステップへ壊れた値を持ち越さない
+  for (const b of bodies) {
+    if (!b.held) sanitize(b);
   }
 
   // 出口。床に届いた時点で判定する

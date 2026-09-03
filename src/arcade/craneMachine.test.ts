@@ -4,6 +4,7 @@ import {
   startDrop,
   tickCrane,
   advanceGoal,
+  placeTowardExit,
   MIN_ADVANCE,
   AUTO_DROP_RANGE,
   type Crane,
@@ -37,11 +38,19 @@ function runAttempt(c: Crane, bodies: Body[], ax: number, az: number): CraneEven
   startDrop(c, bodies, DEFAULT_PIT);
   const events: CraneEvent[] = [];
   const LIMIT = 120 * 30;
+  // idle に戻ったあとも少し回す。決着した位置が出口の中だった場合、
+  // 転落の判定は次のステップで起きる（本番のループも回り続ける）。
+  const FLUSH = 40;
+  let flush = -1;
   for (let i = 0; i < LIMIT; i++) {
     const r = step(bodies, DEFAULT_PIT, STEP);
     for (const id of r.fallen) events.push({ kind: "won", bodyId: id });
     events.push(...tickCrane(c, bodies, DEFAULT_PIT, STEP));
-    if (c.state === "idle" && atRest(bodies)) return events;
+    if (flush >= 0) {
+      if (++flush >= FLUSH) return events;
+    } else if (c.state === "idle" && atRest(bodies)) {
+      flush = 0;
+    }
   }
   throw new Error(`runAttempt が完走しなかった: state=${c.state} atRest=${atRest(bodies)}`);
 }
@@ -215,18 +224,111 @@ describe("端から端までの獲得シミュレーション (仕様7.8)", () =
     return { firstTry: firstTry / sessions, within4: within4 / sessions };
   }
 
-  it("初見(σ=18px): 4回以内獲得率 >= 0.95", () => {
-    expect(play(18, 150).within4).toBeGreaterThanOrEqual(0.95);
+  // 閾値は仕様 7.8 のとおり。緩めると「取れない」「簡単すぎる」を見逃す。
+  it("初見(σ=18px): 4回以内獲得率 >= 0.95、1回目 0.15〜0.45", () => {
+    const r = play(18, 400);
+    expect(r.within4, "4回以内に取れない").toBeGreaterThanOrEqual(0.95);
+    expect(r.firstTry, "1回目が難しすぎる").toBeGreaterThanOrEqual(0.15);
+    expect(r.firstTry, "1回目が簡単すぎる").toBeLessThanOrEqual(0.45);
   });
 
-  it("初見(σ=18px): 1回目獲得率が 0.10〜0.55 に収まる（下手すぎず簡単すぎず）", () => {
-    const r = play(18, 150);
-    expect(r.firstTry).toBeGreaterThanOrEqual(0.1);
-    expect(r.firstTry).toBeLessThanOrEqual(0.55);
+  it("上手いプレイヤー(σ=9px): 1回目獲得率 >= 0.50", () => {
+    expect(play(9, 400).firstTry).toBeGreaterThanOrEqual(0.5);
+  });
+});
+
+describe("決定論的な最終配置が別の景品を出口へ押し込まない", () => {
+  // 転がった景品が別の子を突き落とすのは物理として正しく、嬉しい出来事でもある。
+  // 問題なのは、最後の手段の「直接配置」が押しのけた先が出口の中で、
+  // 何も転がっていないのに別の子が落ちてしまうこと。そこだけを見る。
+  it("placeTowardExit の押しのけ先が出口の内側にならない", () => {
+    for (let trial = 0; trial < 30; trial++) {
+      const target = prize(DEFAULT_PIT.exit.x + 120, DEFAULT_PIT.exit.z + 20, "p1");
+      // 対象と出口を結ぶ線上に、押しのけられる景品を並べる
+      const others = [
+        prize(DEFAULT_PIT.exit.x + 40 + trial, DEFAULT_PIT.exit.z + 8, "b1"),
+        prize(DEFAULT_PIT.exit.x + 62, DEFAULT_PIT.exit.z + 22 + trial * 0.5, "b2"),
+      ];
+      const all = [target, ...others];
+      placeTowardExit(target, all, DEFAULT_PIT, 60);
+      for (const o of others) {
+        expect(exitDistance(o, DEFAULT_PIT), `trial ${trial} ${o.id} が出口の中`).toBeGreaterThan(
+          DEFAULT_PIT.exit.r
+        );
+      }
+    }
   });
 
-  it("上手いプレイヤー(σ=9px)のほうが1回目獲得率が高い", () => {
-    expect(play(9, 150).firstTry).toBeGreaterThan(play(18, 150).firstTry);
+  it("押しのけても対象自身の位置は動かない（保証した位置が壊れない）", () => {
+    const target = prize(DEFAULT_PIT.exit.x + 120, DEFAULT_PIT.exit.z + 20, "p1");
+    const others = [prize(DEFAULT_PIT.exit.x + 55, DEFAULT_PIT.exit.z + 12, "b1")];
+    const all = [target, ...others];
+    placeTowardExit(target, all, DEFAULT_PIT, 60);
+    expect(exitDistance(target, DEFAULT_PIT)).toBeCloseTo(60, 3);
+  });
+
+  it("押しのけた景品が盤面の外へ出ない", () => {
+    const target = prize(DEFAULT_PIT.exit.x + 60, DEFAULT_PIT.exit.z + 10, "p1");
+    const others = [
+      prize(DEFAULT_PIT.maxX - 2, DEFAULT_PIT.maxZ - 2, "b1"),
+      prize(DEFAULT_PIT.minX + 2, DEFAULT_PIT.minZ + 2, "b2"),
+    ];
+    const all = [target, ...others];
+    placeTowardExit(target, all, DEFAULT_PIT, 45);
+    for (const o of others) {
+      expect(o.x).toBeGreaterThanOrEqual(DEFAULT_PIT.minX);
+      expect(o.x).toBeLessThanOrEqual(DEFAULT_PIT.maxX);
+      expect(o.z).toBeGreaterThanOrEqual(DEFAULT_PIT.minZ);
+      expect(o.z).toBeLessThanOrEqual(DEFAULT_PIT.maxZ);
+    }
+  });
+
+  // 不変条件は「その試行の対象」に対して成立する。毎回まったく別の子を狙えば
+  // 1匹あたりの前進は遅くなる。ここでは実プレイヤーと同じく同じ子を狙い続ける。
+  it("同じ景品を狙って4回外し続ければ、その子が必ず獲得される（他に景品があっても）", () => {
+    const b = [
+      prize(DEFAULT_PIT.exit.x + 138, DEFAULT_PIT.exit.z, "p1"),
+      prize(DEFAULT_PIT.exit.x + 62, DEFAULT_PIT.exit.z + 40, "other"),
+    ];
+    const c = createCrane();
+    const all: CraneEvent[] = [];
+    for (let n = 1; n <= 4; n++) {
+      const t = find(b, "p1");
+      if (!t) break;
+      const before = exitDistance(t, DEFAULT_PIT);
+      // p1 に最も近いが、掴み半径 (最大77px) の外へ大きく外した位置を狙う
+      all.push(...runAttempt(c, b, t.x + 200, t.z));
+      const after = find(b, "p1");
+      if (after) {
+        expect(exitDistance(after, DEFAULT_PIT), `n=${n} p1 が前進していない`).toBeLessThanOrEqual(
+          advanceGoal(before) + 0.5
+        );
+      }
+    }
+    expect(all.filter((e) => e.kind === "won").map((e) => e.bodyId)).toContain("p1");
+  });
+});
+
+describe("異常な入力への耐性", () => {
+  it("速度が巨大でもNaNにならず、試行が完走する", () => {
+    const b = [prize(150, 100)];
+    b[0].vx = 1e12;
+    b[0].vz = -1e12;
+    const c = createCrane();
+    expect(() => runAttempt(c, b, 150, 100)).not.toThrow();
+    for (const o of b) {
+      expect(Number.isFinite(o.x), "x が壊れた").toBe(true);
+      expect(Number.isFinite(o.z), "z が壊れた").toBe(true);
+    }
+    expect(c.state).toBe("idle");
+  });
+
+  it("座標がNaNでも試行が完走する", () => {
+    const b = [prize(150, 100)];
+    b[0].x = Number.NaN;
+    const c = createCrane();
+    expect(() => runAttempt(c, b, 150, 100)).not.toThrow();
+    expect(c.state).toBe("idle");
   });
 });
 

@@ -157,7 +157,12 @@ export function placeTowardExit(
   return "placed";
 }
 
-/** 対象は固定したまま、重なっている他の景品だけを押しのける。 */
+/**
+ * 対象は固定したまま、重なっている他の景品だけを押しのける。
+ *
+ * 押しのけた先が出口の中だと、**狙っていない景品が獲得されてしまう。**
+ * 押し出しのたびに出口の外へ逃がすこと。
+ */
 function pushOthersAway(target: Body, others: Body[], pit: Pit): void {
   const movable = others.filter((o) => o.id !== target.id && !o.held);
   for (let pass = 0; pass < 8; pass++) {
@@ -181,6 +186,7 @@ function pushOthersAway(target: Body, others: Body[], pit: Pit): void {
         o.z += (dz / d) * push;
         o.x = Math.min(pit.maxX, Math.max(pit.minX, o.x));
         o.z = Math.min(pit.maxZ, Math.max(pit.minZ, o.z));
+        keepOutOfExit(o, pit);
         o.vx = 0;
         o.vz = 0;
         moved = true;
@@ -188,6 +194,47 @@ function pushOthersAway(target: Body, others: Body[], pit: Pit): void {
     }
     if (!moved) break;
   }
+
+  // 最後にもう一度、押しのけた全員を出口の外へ逃がす。
+  // 各回の押し出しで一度外へ出しても、後の回で押し戻されることがある。
+  for (const o of movable) keepOutOfExit(o, pit);
+}
+
+/**
+ * 出口の内側に入ってしまった景品を、縁の外へ押し戻す。
+ *
+ * 半径方向へ出しただけでは盤面の外に出てしまうことがあり、
+ * 盤面内へ丸め直すと再び出口の中に戻ってしまう。
+ * そこで出口のまわりの向きを順に試し、
+ * 「盤面の内側」かつ「出口の外」を同時に満たす位置を選ぶ。
+ */
+function keepOutOfExit(b: Body, pit: Pit): void {
+  const safe = pit.exit.r + b.r * 0.35;
+  if (exitDistance(b, pit) >= safe) return;
+
+  const inBounds = (x: number, z: number) =>
+    x >= pit.minX && x <= pit.maxX && z >= pit.minZ && z <= pit.maxZ;
+
+  const dx = b.x - pit.exit.x;
+  const dz = b.z - pit.exit.z;
+  const base = Math.hypot(dx, dz) > 1e-6 ? Math.atan2(dz, dx) : 0;
+
+  // 元の向きを最優先し、そこから左右へ広げながら探す
+  for (let i = 0; i < 24; i++) {
+    const spread = Math.ceil(i / 2) * (Math.PI / 12);
+    const a = base + (i % 2 === 0 ? spread : -spread);
+    const x = pit.exit.x + Math.cos(a) * safe;
+    const z = pit.exit.z + Math.sin(a) * safe;
+    if (inBounds(x, z)) {
+      b.x = x;
+      b.z = z;
+      return;
+    }
+  }
+
+  // どの向きも盤面に収まらない極端な盤面。中央へ逃がす。
+  b.x = (pit.minX + pit.maxX) / 2;
+  b.z = (pit.minZ + pit.maxZ) / 2;
 }
 
 // ---------------------------------------------------------------- 状態機械
@@ -229,7 +276,12 @@ export type Crane = {
   targetId: string | null;
   advanceBefore: number;
   advanceRetries: number;
+  /** settle に居続けた時間 (秒)。盤面が静止しない異常時の逃げ道 */
+  settleElapsed: number;
 };
+
+/** settle がこの秒数を超えたら、静止を待たずに決着させる。 */
+export const SETTLE_TIMEOUT = 8;
 
 /**
  * アームの最高高さ。投影後に画面の上端からはみ出さない値にすること。
@@ -254,6 +306,7 @@ export function createCrane(): Crane {
     targetId: null,
     advanceBefore: 0,
     advanceRetries: 0,
+    settleElapsed: 0,
   };
 }
 
@@ -275,11 +328,16 @@ function nearestBody(bodies: Body[], x: number, z: number): Body | undefined {
  *
  * 掴めるかどうかに関わらず「対象」をここで決める。空振りでもこの子が動き、
  * 試行終了後に不変条件（7.7）の検査を受ける。
+ *
+ * 不変条件は「その試行の対象」に対して成立する。毎回まったく別の景品を
+ * 狙えば、1匹あたりの前進はその分ゆっくりになる。「4回以内に取れる」は
+ * 同じ子を狙い続けた場合の保証である。
  */
 export function startDrop(c: Crane, bodies: Body[], pit: Pit): void {
   c.attemptsOnBoard++;
   c.liftElapsed = 0;
   c.advanceRetries = 0;
+  c.settleElapsed = 0;
   c.hold = 0;
   c.hold0 = 0;
   c.heldId = null;
@@ -405,7 +463,18 @@ export function tickCrane(c: Crane, bodies: Body[], pit: Pit, dt: number): Crane
     }
 
     case "settle": {
-      if (!atRest(bodies)) break;
+      c.settleElapsed += dt;
+      // 盤面が静止しない異常が起きても、プレイヤーを永久に待たせない
+      const timedOut = c.settleElapsed >= SETTLE_TIMEOUT;
+      if (!atRest(bodies) && !timedOut) break;
+      if (timedOut) {
+        for (const b of bodies) {
+          b.vx = 0;
+          b.vy = 0;
+          b.vz = 0;
+          b.y = 0;
+        }
+      }
 
       const target = byId(c.targetId);
       if (!target) {
@@ -424,7 +493,7 @@ export function tickCrane(c: Crane, bodies: Body[], pit: Pit, dt: number): Crane
         finish(c);
         break;
       }
-      if (c.advanceRetries < MAX_ADVANCE_RETRIES) {
+      if (!timedOut && c.advanceRetries < MAX_ADVANCE_RETRIES) {
         c.advanceRetries++;
         advanceImpulse(target, pit, exitDistance(target, pit) - advanceGoal(c.advanceBefore));
         break;
@@ -465,6 +534,7 @@ function acquire(target: Body, bodies: Body[], events: CraneEvent[]): void {
 
 function finish(c: Crane): void {
   c.state = "idle";
+  c.settleElapsed = 0;
   c.targetId = null;
   c.heldId = null;
   c.hold = 0;

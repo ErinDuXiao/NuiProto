@@ -6,6 +6,7 @@ import { NEUTRAL_POSE, plushTop, type Pose } from "../render/pose";
 import { useAmbientLife, type AmbientTarget } from "../render/useAmbientLife";
 import { store, useGame } from "../state/store";
 import { SHELF, rowY } from "./shelfLayout";
+import { useDragPlacement } from "./useDragPlacement";
 import { useCeremony, CeremonyActors, CeremonyOverlay } from "./MeetingCeremony";
 
 type Props = {
@@ -24,10 +25,16 @@ type Bubble = { uid: string; text: string; until: number };
 export function ShelfScreen({ onGoArcade, onShare }: Props) {
   const game = useGame();
   const refs = useRef(new Map<string, SVGGElement | null>());
+  const svgRef = useRef<SVGSVGElement>(null);
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [squashed, setSquashed] = useState<Record<string, number>>({});
   /** 演出中はタップのリアクションを止める。コールバックを作り直さずに済ませる */
   const ceremonyActiveRef = useRef(false);
+  /** touch コールバックを作り直さずに最新の所持品を読むため */
+  const ownedRef = useRef(game.owned);
+  ownedRef.current = game.owned;
+  /** ドラッグフックへ渡すタップ処理。実体は下で差し込む */
+  const touchRef = useRef<(uid: string) => void>(() => {});
   /** アンマウント後に発火させないための後片付け */
   const squashTimers = useRef(new Set<number>());
   const ringTimer = useRef(0);
@@ -63,8 +70,16 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
     [onShelf]
   );
 
-  // 演出中は環境アニメーションを止め、演出側にポーズの制御を渡す
-  useAmbientLife(refs, targets, !ceremony.active);
+  const { onPointerDown, drag } = useDragPlacement({
+    owned: game.owned,
+    svgRef,
+    enabled: !ceremony.active,
+    onTap: (uid) => touchRef.current(uid),
+  });
+
+  // 演出中・ドラッグ中は環境アニメーションを止める。
+  // ambient が transform を書き換えると、掴んだ位置とずれてしまう。
+  useAmbientLife(refs, targets, !ceremony.active && drag === null);
 
   // 滞在時間を計る。「一覧として消費されている」か「眺めている」かを見分ける指標（仕様17.2）
   useEffect(() => {
@@ -85,8 +100,11 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
   }, [bubbles]);
 
   const touch = useCallback(
-    (uid: string, defId: string, seed: number) => {
+    (uid: string) => {
       if (ceremonyActiveRef.current) return;
+      const target = ownedRef.current.find((o) => o.uid === uid);
+      if (!target) return;
+      const { defId, seed } = target;
       store.log("plush_touched", { plushId: defId });
       setBubbles((b) => [
         ...b.filter((x) => x.uid !== uid),
@@ -106,6 +124,8 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
     []
   );
 
+  touchRef.current = touch;
+
   return (
     <div className="screen shelf">
       <header className="shelf-header">
@@ -114,6 +134,7 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
       </header>
 
       <svg
+        ref={svgRef}
         className="room"
         viewBox={`0 0 ${SHELF.width} ${SHELF.height + 53}`}
         role="img"
@@ -126,11 +147,14 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
         {onShelf.map((o) => {
           if (ceremony.stagedUids.has(o.uid)) return null;
           const def = getPlush(o.defId);
-          const y = rowY(o.shelfRow);
-          const pose = poseFor(squashed[o.uid]);
+          const dragging = drag?.uid === o.uid && drag.moved;
+          const x = dragging ? drag.x : o.x;
+          const row = dragging ? drag.shelfRow : o.shelfRow;
+          const y = rowY(row);
+          const pose = poseFor(squashed[o.uid], dragging);
           const bubble = bubbles.find((b) => b.uid === o.uid);
           return (
-            <g key={o.uid} transform={`translate(0 ${y})`}>
+            <g key={o.uid} transform={`translate(0 ${y})`} opacity={dragging ? 0.92 : 1}>
               <g
                 ref={(el) => {
                   // React は外すときに null を渡す。消さないと棚から居なくなった
@@ -138,14 +162,14 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
                   if (el) refs.current.set(o.uid, el);
                   else refs.current.delete(o.uid);
                 }}
-                transform={`translate(${o.x} 0)`}
-                onPointerDown={() => touch(o.uid, o.defId, o.seed)}
-                style={{ cursor: "pointer" }}
+                transform={`translate(${x} 0)`}
+                onPointerDown={(e) => onPointerDown(o.uid, e)}
+                style={{ cursor: dragging ? "grabbing" : "grab" }}
               >
                 <PlushSVG def={def} pose={pose} seed={o.seed} />
               </g>
-              {o.uid === ringUid && <WelcomeRing x={o.x} r={def.size} />}
-              {bubble && <Bubble x={o.x} y={plushTop(def) - 14} text={bubble.text} />}
+              {o.uid === ringUid && <WelcomeRing x={x} r={def.size} />}
+              {bubble && <Bubble x={x} y={plushTop(def) - 14} text={bubble.text} />}
             </g>
           );
         })}
@@ -167,7 +191,9 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
 }
 
 /** クリックされた直後だけ潰れて、オーバーシュートしながら戻る。 */
-function poseFor(touchedAt: number | undefined): Pose {
+function poseFor(touchedAt: number | undefined, dragging = false): Pose {
+  // つままれている間は少し伸びて揺れる
+  if (dragging) return { ...NEUTRAL_POSE, squash: 1.06, tilt: -4 };
   if (!touchedAt) return NEUTRAL_POSE;
   const t = (Date.now() - touchedAt) / 460;
   if (t >= 1) return NEUTRAL_POSE;

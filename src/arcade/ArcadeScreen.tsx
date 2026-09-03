@@ -53,6 +53,10 @@ export function ArcadeScreen({ onGoShelf, debugPhysics }: Props) {
     count: 0,
   });
   const wonRef = useRef(false);
+  /** ループのクロージャから最新の props を読むため */
+  const goShelfRef = useRef(onGoShelf);
+  goShelfRef.current = onGoShelf;
+  const returnTimer = useRef(0);
 
   const [frame, setFrame] = useState<Frame | null>(null);
   const [fps, setFps] = useState(0);
@@ -73,6 +77,7 @@ export function ArcadeScreen({ onGoShelf, debugPhysics }: Props) {
     store.log("arcade_enter");
     return () => {
       store.log("shelf_return");
+      window.clearTimeout(returnTimer.current);
     };
   }, []);
 
@@ -198,7 +203,7 @@ export function ArcadeScreen({ onGoShelf, debugPhysics }: Props) {
           store.winPlush(defId);
           store.saveBoard(null);
           // 少し余韻を置いてから棚へ帰る
-          window.setTimeout(() => onGoShelf(), 1500);
+          returnTimer.current = window.setTimeout(() => goShelfRef.current(), 1500);
         }
         break;
       }

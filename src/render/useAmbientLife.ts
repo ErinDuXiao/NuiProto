@@ -154,6 +154,22 @@ export function useAmbientLife(
       running = false;
       cancelAnimationFrame(raf);
       document.removeEventListener("visibilitychange", onVisibility);
+
+      // 瞬きの途中で止まると目が閉じたままになる。
+      // 書き換えた属性を必ず元に戻してから抜ける。
+      const map = registry.current;
+      if (!map) return;
+      for (const target of list) {
+        const el = map.get(target.uid);
+        if (!el) continue;
+        el.setAttribute("transform", `translate(${target.x} 0)`);
+        for (const eye of el.querySelectorAll<SVGEllipseElement>('[data-part="eye"]')) {
+          const base = eye.dataset.baseRy;
+          if (base) eye.setAttribute("ry", base);
+        }
+        const face = el.querySelector<SVGGElement>('[data-part="face"]');
+        face?.setAttribute("transform", "translate(0 0)");
+      }
     };
     // targets は key で同一性を判定する
     // eslint-disable-next-line react-hooks/exhaustive-deps
