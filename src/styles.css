@@ -97,11 +97,21 @@ button {
   opacity: 0.7;
 }
 
+/*
+  SVG は viewBox から固有のアスペクト比を持つため、width:100% だけだと
+  高さが勝手に決まり、画面が低いとボタンが画面外へ押し出される。
+  親を flex で潰し、SVG には height:100% を与えて中で余白を取らせる。
+*/
+.room-wrap {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+}
+
 .room {
   display: block;
   width: 100%;
-  flex: 1;
-  min-height: 0;
+  height: 100%;
   user-select: none;
   -webkit-user-select: none;
   /*
@@ -220,11 +230,15 @@ button {
 .pit-wrap {
   position: relative;
   padding-bottom: 42px;
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
 }
 
 .pit {
   display: block;
   width: 100%;
+  height: 100%;
   user-select: none;
   -webkit-user-select: none;
   touch-action: manipulation;

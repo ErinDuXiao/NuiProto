@@ -139,6 +139,7 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
         <MuteToggle />
       </header>
 
+      <div className="room-wrap">
       <svg
         ref={svgRef}
         className="room"
@@ -180,6 +181,7 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
           );
         })}
       </svg>
+      </div>
 
       {/* 演出中はナビゲーションを止める。途中で画面を離れると演出が中断される */}
       <nav className="shelf-actions">
