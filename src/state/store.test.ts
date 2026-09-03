@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { store } from "./store";
-import { STORAGE_KEY, SHELF_CAPACITY } from "./persist";
+import { STORAGE_KEY, PER_ROW, SHELF_CAPACITY, SHELF_ROWS, SLOT_SPACING } from "./persist";
 
 beforeEach(() => {
   localStorage.clear();
@@ -97,23 +97,21 @@ describe("store", () => {
     store.winPlush("rabbit_01");
     const rabbit = store.get().owned[1];
     expect(rabbit.shelfRow).toBe(bear.shelfRow);
-    expect(Math.abs(rabbit.x - bear.x)).toBeLessThanOrEqual(80);
+    expect(Math.abs(rabbit.x - bear.x)).toBeLessThanOrEqual(SLOT_SPACING);
   });
 
-  it("3匹目・4匹目も既にいる子の近くに来る", () => {
+  it("同じ段を埋めきってから次の段へ移る（ばらけて置かれない）", () => {
     store.winPlush("rabbit_01");
     store.winPlush("fox_01");
+    const firstRow = store.get().owned[0].shelfRow;
+    expect(
+      store.get().owned.filter((o) => o.shelfRow === firstRow),
+      "先に始めた段を埋めきっていない"
+    ).toHaveLength(PER_ROW);
+
     store.winPlush("frog_01");
-    const onShelf = store.get().owned.filter((o) => o.shelfRow >= 0);
-    for (const o of onShelf) {
-      const nearest = onShelf
-        .filter((x) => x.uid !== o.uid)
-        .reduce(
-          (m, x) => Math.min(m, Math.abs(x.x - o.x) + (x.shelfRow === o.shelfRow ? 0 : 400)),
-          Infinity
-        );
-      expect(nearest, o.defId).toBeLessThanOrEqual(160);
-    }
+    const rows = store.get().owned.filter((o) => o.shelfRow >= 0).map((o) => o.shelfRow);
+    expect(new Set(rows).size).toBe(2);
   });
 
   it("箱の中の子を棚へ出そうとしても定員13匹目にはならない", () => {
@@ -129,7 +127,7 @@ describe("store", () => {
     store.movePlush(uid, Number.NaN, 99);
     const o = store.get().owned[0];
     expect(Number.isFinite(o.x)).toBe(true);
-    expect(o.shelfRow).toBeLessThan(3);
+    expect(o.shelfRow).toBeLessThan(SHELF_ROWS);
     expect(o.shelfRow).toBeGreaterThanOrEqual(-1);
   });
 

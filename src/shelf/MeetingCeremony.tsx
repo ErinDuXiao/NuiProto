@@ -1,95 +1,127 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getPlush } from "../data/plushies";
 import { PlushSVG } from "../render/PlushSVG";
-import { NEUTRAL_POSE } from "../render/pose";
+import { NEUTRAL_POSE, plushTop } from "../render/pose";
 import { useGame } from "../state/store";
-import { ceremonyAt, ceremonyDuration, type CeremonyPhase } from "./ceremonyTimeline";
+import type { OwnedPlush, PlushDef } from "../state/types";
+import { ceremonyAt, ceremonyDuration, pickHost, type CeremonyPhase } from "./ceremonyTimeline";
 import { SHELF, rowY } from "./shelfLayout";
 
-type Props = {
-  guestUid: string;
-  /** フル版か短縮版か。所持数から推測せず、firstMeetingDone を親が読んで渡す */
-  isFirstMeeting: boolean;
-  onDone: (skipped: boolean) => void;
+export type Ceremony = {
+  active: boolean;
+  phase: CeremonyPhase;
+  host?: OwnedPlush;
+  guest?: OwnedPlush;
+  /** 演出が描画を受け持つ個体。棚側はこれらを描かない（二重描画の防止） */
+  stagedUids: Set<string>;
+  skip: () => void;
 };
 
-const START: CeremonyPhase = ceremonyAt(0, true);
+const IDLE: Ceremony = {
+  active: false,
+  phase: ceremonyAt(0, true),
+  stagedUids: new Set(),
+  skip: () => {},
+};
 
 /**
- * 出会いの演出（Priority 1）。
+ * 出会いの演出（Priority 1）のタイムラインを進める。
  *
  * 「2匹が並んだ瞬間に嬉しさがあるか」がこのMVPの中心仮説であり、
- * その瞬間を作るのがこのコンポーネントの唯一の責務である。
- * 自由配置のロジックとは混ぜない。再生中は棚の操作を完全にロックする。
+ * その瞬間を作るのがこの機能の唯一の責務である。自由配置とは混ぜない。
  *
- * 画面のどこをタップしてもスキップできる。繰り返し遊ぶ人にとって
- * 4秒の強制演出は待ち時間に変わるため、逃げ道を必ず用意する。
+ * 描画は部屋の SVG の中で行う（CeremonyActors）。
+ * 別の SVG に重ねるとレイアウト箱が違って座標系がずれ、
+ * ぬいぐるみが棚板から浮いてしまうため、必ず同じ SVG に描く。
  */
-export function MeetingCeremony({ guestUid, isFirstMeeting, onDone }: Props) {
+export function useCeremony(
+  guestUid: string | null,
+  isFirstMeeting: boolean,
+  onDone: (skipped: boolean) => void
+): Ceremony {
   const game = useGame();
-  const [phase, setPhase] = useState<CeremonyPhase>(START);
-  const doneRef = useRef(false);
+  const [phase, setPhase] = useState<CeremonyPhase>(IDLE.phase);
+  /** 完了済みの guestUid。同じ個体の演出を二度走らせないための番人 */
+  const doneRef = useRef<string | null>(null);
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
 
-  const guest = game.owned.find((o) => o.uid === guestUid);
-
-  // 先輩役は新入りの最近傍1匹
-  const host = useMemo(() => {
-    if (!guest) return undefined;
-    const others = game.owned.filter((o) => o.uid !== guestUid && o.shelfRow >= 0);
-    if (others.length === 0) return undefined;
-    return others.reduce((best, o) => {
-      const d = Math.hypot(o.x - guest.x, (o.shelfRow - guest.shelfRow) * 120);
-      const bd = Math.hypot(best.x - guest.x, (best.shelfRow - guest.shelfRow) * 120);
-      return d < bd ? o : best;
-    });
-  }, [game.owned, guest, guestUid]);
+  const guest = guestUid ? game.owned.find((o) => o.uid === guestUid) : undefined;
+  const host = useMemo(
+    () => (guestUid ? pickHost(game.owned, guestUid) : undefined),
+    [game.owned, guestUid]
+  );
 
   const duration = ceremonyDuration(isFirstMeeting);
+  const playable = Boolean(guestUid && guest && guest.shelfRow >= 0 && host);
 
   useEffect(() => {
-    // 迎える相手が居ない、あるいは新入りが箱の中なら演出せずに終える
-    if (!guest || guest.shelfRow < 0 || !host) {
-      if (!doneRef.current) {
-        doneRef.current = true;
-        onDone(false);
-      }
-      return;
-    }
-    if (typeof requestAnimationFrame !== "function") {
-      doneRef.current = true;
-      onDone(false);
+    if (!guestUid || doneRef.current === guestUid) return;
+
+    // 迎える相手が居ない／新入りが箱の中／rAF が無い環境では演出せず即座に終える
+    if (!playable || typeof requestAnimationFrame !== "function") {
+      doneRef.current = guestUid;
+      onDoneRef.current(false);
       return;
     }
 
     const started = performance.now();
     let raf = 0;
+    let finishTimer = 0;
+
+    const finish = () => {
+      if (doneRef.current === guestUid) return;
+      doneRef.current = guestUid;
+      onDoneRef.current(false);
+    };
+
     const tick = (now: number) => {
       const t = now - started;
       setPhase(ceremonyAt(t, isFirstMeeting));
       if (t >= duration) {
-        if (!doneRef.current) {
-          doneRef.current = true;
-          // 最終状態を一瞬見せてから解放する
-          window.setTimeout(() => onDone(false), 500);
-        }
+        // 最終状態を一瞬見せてから配置操作を解放する
+        finishTimer = window.setTimeout(finish, 500);
         return;
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-    // onDone は毎レンダー変わりうるが、演出は1度きりなので依存に入れない
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [guestUid, isFirstMeeting, duration, guest?.shelfRow, host?.uid]);
 
-  const skip = () => {
-    if (doneRef.current) return;
-    doneRef.current = true;
-    setPhase(ceremonyAt(duration, isFirstMeeting));
-    onDone(true);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(finishTimer);
+    };
+  }, [guestUid, isFirstMeeting, duration, playable]);
+
+  const stagedUids = useMemo(() => {
+    if (!guestUid || !playable) return new Set<string>();
+    return new Set(host ? [guestUid, host.uid] : [guestUid]);
+  }, [guestUid, playable, host]);
+
+  if (!guestUid || !playable) return IDLE;
+
+  return {
+    active: true,
+    phase,
+    host,
+    guest,
+    stagedUids,
+    skip: () => {
+      if (doneRef.current === guestUid) return;
+      doneRef.current = guestUid;
+      setPhase(ceremonyAt(duration, isFirstMeeting));
+      onDoneRef.current(true);
+    },
   };
+}
 
-  if (!guest || !host) return null;
+/**
+ * 演出中の2匹。**部屋の SVG の中に置くこと。**
+ * 棚のぬいぐるみと同じ座標系で描くことで、棚板からの浮きが起きない。
+ */
+export function CeremonyActors({ ceremony }: { ceremony: Ceremony }) {
+  const { phase, host, guest } = ceremony;
+  if (!ceremony.active || !host || !guest) return null;
 
   const guestDef = getPlush(guest.defId);
   const hostDef = getPlush(host.defId);
@@ -98,60 +130,60 @@ export function MeetingCeremony({ guestUid, isFirstMeeting, onDone }: Props) {
   const lookDir = Math.sign(guest.x - host.x) || 1;
 
   return (
-    <div className="ceremony" onPointerDown={skip} role="presentation">
-      <svg
-        className="ceremony-stage"
-        viewBox={`0 0 ${SHELF.width} ${SHELF.height + 40}`}
-        aria-hidden="true"
-      >
-        {/* 先輩。新入りの方を向いて、つられて少し跳ねる */}
-        <g transform={`translate(${host.x} ${hostY})`}>
-          <PlushSVG
-            def={hostDef}
-            pose={{
-              ...NEUTRAL_POSE,
-              lookAt: phase.hostLook * lookDir,
-              tilt: phase.hostLook * lookDir * 5,
-              hop: phase.hostHop,
-            }}
-            seed={host.seed}
-          />
-        </g>
+    <g>
+      {/* 先輩。新入りの方を向いて、つられて少し跳ねる */}
+      <g transform={`translate(${host.x} ${hostY})`}>
+        <PlushSVG
+          def={hostDef}
+          pose={{
+            ...NEUTRAL_POSE,
+            lookAt: phase.hostLook * lookDir,
+            tilt: phase.hostLook * lookDir * 5,
+            hop: phase.hostHop,
+          }}
+          seed={host.seed}
+        />
+      </g>
 
-        {/* 新入り。上から落ちて、ころんと着地して、跳ねる */}
-        <g transform={`translate(${guest.x} ${guestY})`}>
-          <PlushSVG
-            def={guestDef}
-            pose={{
-              ...NEUTRAL_POSE,
-              squash: phase.guestSquash,
-              hop: phase.guestDrop + phase.guestHop,
-              lookAt: phase.guestHop > 0 ? -lookDir * 0.6 : 0,
-            }}
-            seed={guest.seed}
-          />
-          {phase.sparkle && <Sparkle r={guestDef.size} />}
-        </g>
+      {/* 新入り。上から落ちて、ころんと着地して、跳ねる */}
+      <g transform={`translate(${guest.x} ${guestY})`}>
+        <PlushSVG
+          def={guestDef}
+          pose={{
+            ...NEUTRAL_POSE,
+            squash: phase.guestSquash,
+            hop: phase.guestDrop + phase.guestHop,
+            lookAt: phase.guestHop > 0 ? -lookDir * 0.6 : 0,
+          }}
+          seed={guest.seed}
+        />
+        {phase.sparkle && <Sparkle r={guestDef.size} />}
+      </g>
 
-        {phase.hostLine && (
-          <Bubble x={host.x} y={hostY - hostDef.size * 2.1} text={phase.hostLine} />
-        )}
-        {phase.guestLine && !phase.hostLine && (
-          <Bubble x={guest.x} y={guestY - guestDef.size * 2.1} text={phase.guestLine} />
-        )}
-      </svg>
-
-      {phase.caption && <p className="ceremony-caption">{phase.caption}</p>}
-    </div>
+      {phase.hostLine && (
+        <CeremonyBubble x={host.x} y={hostY + bubbleY(hostDef)} text={phase.hostLine} />
+      )}
+      {phase.guestLine && !phase.hostLine && (
+        <CeremonyBubble
+          x={guest.x}
+          y={guestY + bubbleY(guestDef) - phase.guestHop}
+          text={phase.guestLine}
+        />
+      )}
+    </g>
   );
+}
+
+function bubbleY(def: PlushDef): number {
+  return plushTop(def) - 14;
 }
 
 /** 小さな粒3つ。キラキラを過剰にしない（依頼書18章）。 */
 function Sparkle({ r }: { r: number }) {
   const pts = [
-    { x: -r * 0.9, y: -r * 1.6, s: 2.4 },
-    { x: r * 0.85, y: -r * 1.9, s: 3 },
-    { x: r * 0.2, y: -r * 2.3, s: 2 },
+    { x: -r * 0.95, y: -r * 1.7, s: 2.4 },
+    { x: r * 0.9, y: -r * 2.0, s: 3 },
+    { x: r * 0.2, y: -r * 2.4, s: 2 },
   ];
   return (
     <g>
@@ -162,7 +194,7 @@ function Sparkle({ r }: { r: number }) {
   );
 }
 
-function Bubble({ x, y, text }: { x: number; y: number; text: string }) {
+function CeremonyBubble({ x, y, text }: { x: number; y: number; text: string }) {
   const w = Math.min(160, text.length * 13 + 22);
   const cx = Math.max(w / 2 + 4, Math.min(SHELF.width - w / 2 - 4, x));
   return (
@@ -173,5 +205,18 @@ function Bubble({ x, y, text }: { x: number; y: number; text: string }) {
         {text}
       </text>
     </g>
+  );
+}
+
+/**
+ * 演出中に画面を覆う層。タップでスキップし、キャプションを出す。
+ * 繰り返し遊ぶ人にとって強制演出は待ち時間に変わるので、逃げ道を必ず用意する。
+ */
+export function CeremonyOverlay({ ceremony }: { ceremony: Ceremony }) {
+  if (!ceremony.active) return null;
+  return (
+    <div className="ceremony" onPointerDown={ceremony.skip} role="presentation">
+      {ceremony.phase.caption && <p className="ceremony-caption">{ceremony.phase.caption}</p>}
+    </div>
   );
 }

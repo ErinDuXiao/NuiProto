@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { loadSave, writeSave, initialSave, STORAGE_KEY } from "./persist";
+import { loadSave, writeSave, initialSave, STORAGE_KEY, SHELF_ROWS } from "./persist";
 
 beforeEach(() => localStorage.clear());
 afterEach(() => vi.restoreAllMocks());
@@ -106,7 +106,7 @@ describe("persist", () => {
     const back = loadSave();
     expect(Number.isFinite(back.attempts)).toBe(true);
     expect(Number.isFinite(back.owned[0].x)).toBe(true);
-    expect(back.owned[0].shelfRow).toBeLessThan(3);
+    expect(back.owned[0].shelfRow).toBeLessThan(SHELF_ROWS);
   });
 
   it("未知のイベント種別を持つログは捨てる", () => {

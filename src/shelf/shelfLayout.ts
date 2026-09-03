@@ -1,4 +1,4 @@
-import { SHELF_CAPACITY } from "../state/persist";
+import { PER_ROW, SHELF_CAPACITY, SHELF_ROWS, SLOT_SPACING, SLOT_X0 } from "../state/persist";
 
 /**
  * 棚の寸法。スマホ縦画面の内寸 320px を基準にする。
@@ -6,14 +6,18 @@ import { SHELF_CAPACITY } from "../state/persist";
  */
 export const SHELF = {
   width: 320,
-  height: 400,
-  rows: 3,
-  rowY: [136, 254, 372] as const,
+  height: 520,
+  rows: SHELF_ROWS,
+  /** 各段の上面ライン。ぬいぐるみの足元がここに乗る */
+  rowY: [214, 316, 418, 520] as const,
   padding: 12,
+  /** 棚の枠（キャビネット）の左右の内側。左右に部屋の余白を残す */
+  frameLeft: 36,
+  frameRight: 284,
+  frameTop: 110,
 } as const;
 
-/** 1段あたりの定員。 */
-export const PER_ROW = SHELF_CAPACITY / SHELF.rows;
+export { PER_ROW };
 
 /** 棚の内側に収まる x に丸める。 */
 export function clampToShelf(x: number, r: number): number {
@@ -31,7 +35,7 @@ export function clampToShelf(x: number, r: number): number {
 export function defaultSlot(index: number): { x: number; shelfRow: number } {
   if (index < 0 || index >= SHELF_CAPACITY) return { x: SHELF.width / 2, shelfRow: -1 };
   return {
-    x: 40 + (index % PER_ROW) * 80,
+    x: SLOT_X0 + (index % PER_ROW) * SLOT_SPACING,
     shelfRow: Math.floor(index / PER_ROW),
   };
 }

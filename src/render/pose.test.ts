@@ -13,16 +13,25 @@ describe("individuality", () => {
     expect(individuality(0.42)).toEqual(individuality(0.42));
   });
 
-  it("色相ずれは±6度以内", () => {
+  it("色・サイズのずれが控えめな範囲に収まる（別種に見えてはいけない）", () => {
     for (let s = 0; s <= 1; s += 0.05) {
-      expect(Math.abs(individuality(s).hueShift)).toBeLessThanOrEqual(6);
+      const iv = individuality(s);
+      expect(Math.abs(iv.hueShift)).toBeLessThanOrEqual(10);
+      expect(Math.abs(iv.scale - 1)).toBeLessThanOrEqual(0.05);
+      expect(iv.satMul).toBeGreaterThanOrEqual(0.75);
+      expect(iv.satMul).toBeLessThanOrEqual(1.25);
+      expect(Math.abs(iv.lightAdd)).toBeLessThanOrEqual(0.05);
     }
   });
 
-  it("サイズずれは±4%以内", () => {
-    for (let s = 0; s <= 1; s += 0.05) {
-      expect(Math.abs(individuality(s).scale - 1)).toBeLessThanOrEqual(0.04);
+  it("彩度の低い体色でも個体差が見た目に出る（仕様5.4の要点）", () => {
+    // ミルクラビットの体色は #efe6dc でほぼ無彩色。
+    // 色相回転だけでは変化せず、以前はここが素通りしていた。
+    const seen = new Set<string>();
+    for (let s = 0; s <= 1; s += 0.1) {
+      seen.add(applyIndividuality(getPlush("rabbit_01"), s).art.body);
     }
+    expect(seen.size).toBeGreaterThanOrEqual(8);
   });
 
   it("呼吸周期と瞬き間隔が仕様のレンジに入る", () => {

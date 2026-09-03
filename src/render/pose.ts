@@ -50,9 +50,13 @@ export function clamp01(v: number): number {
 }
 
 export type Individuality = {
-  /** 本体色の色相ずれ (deg, ±6) */
+  /** 本体色の色相ずれ (deg, ±10) */
   hueShift: number;
-  /** サイズ倍率 (±4%) */
+  /** 彩度の倍率 (0.75-1.25) */
+  satMul: number;
+  /** 明度の加算 (±0.05) */
+  lightAdd: number;
+  /** サイズ倍率 (±5%) */
   scale: number;
   /** 呼吸周期 (秒, 2.4-3.2) */
   breathPeriod: number;
@@ -69,6 +73,10 @@ export type Individuality = {
  *
  * 同種を2匹持ったとき「どっちも同じ」に見えると、個体への愛着が成立しない。
  * 名前や個体ステータスを持たせる代わりに、この微差だけで別の子に見せる。
+ *
+ * 色相だけをずらしても、ミルクラビットのような彩度の低い体色では
+ * 見た目がほとんど変わらず、個体差が成立しなかった。
+ * そのため彩度と明度も併せてずらしている。
  */
 export function individuality(seed: number): Individuality {
   // NaN / Infinity / 巨大値が来ても SVG 属性に NaN を流さない。
@@ -79,8 +87,10 @@ export function individuality(seed: number): Individuality {
     return x - Math.floor(x);
   };
   return {
-    hueShift: (f(1) * 2 - 1) * 6,
-    scale: 1 + (f(2) * 2 - 1) * 0.04,
+    hueShift: (f(1) * 2 - 1) * 10,
+    satMul: 1 + (f(7) * 2 - 1) * 0.25,
+    lightAdd: (f(8) * 2 - 1) * 0.05,
+    scale: 1 + (f(2) * 2 - 1) * 0.05,
     breathPeriod: 2.4 + f(3) * 0.8,
     blinkBase: 3 + f(4) * 4,
     chatty: f(5),
@@ -149,17 +159,52 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
 const HEX_RE = /^#?(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 
 /**
- * hex 色の色相を deg だけ回す。外部ライブラリを使わない純粋関数。
- * 不正な色や非有限の角度が来た場合は入力をそのまま返す。
+ * hex 色を HSL 空間でずらす。外部ライブラリを使わない純粋関数。
+ * 不正な色や非有限の値が来た場合は入力をそのまま返す。
  * SVG の fill に "#NaNNaNNaN" を流さないことを最優先する。
  */
-export function shiftHue(hex: string, deg: number): string {
+export function tintColor(
+  hex: string,
+  opts: { hue?: number; satMul?: number; lightAdd?: number }
+): string {
+  const hue = opts.hue ?? 0;
+  const satMul = opts.satMul ?? 1;
+  const lightAdd = opts.lightAdd ?? 0;
   if (typeof hex !== "string" || !HEX_RE.test(hex.trim())) return hex;
-  if (!Number.isFinite(deg)) return hex;
+  if (!Number.isFinite(hue) || !Number.isFinite(satMul) || !Number.isFinite(lightAdd)) return hex;
   const [r, g, b] = hexToRgb(hex.trim());
-  const [h, s, l] = rgbToHsl(r, g, b);
-  const [nr, ng, nb] = hslToRgb(h + deg, s, l);
+  const [h, sat, l] = rgbToHsl(r, g, b);
+  const [nr, ng, nb] = hslToRgb(
+    h + hue,
+    Math.min(1, Math.max(0, sat * satMul)),
+    Math.min(0.97, Math.max(0.08, l + lightAdd))
+  );
   return rgbToHex(nr, ng, nb);
+}
+
+/** 色相だけを回す。tintColor の薄いラッパ。 */
+export function shiftHue(hex: string, deg: number): string {
+  return tintColor(hex, { hue: deg });
+}
+
+/**
+ * ぬいぐるみの頭のてっぺんの y（足元原点、上が負）。
+ *
+ * 吹き出しやリングをぬいぐるみに被せないために使う。
+ * 顔が隠れると表情が見えず、演出の意味がなくなる。
+ */
+export function plushTop(def: PlushDef): number {
+  const ratioY =
+    def.art.shape === "long" ? 1.18 : def.art.shape === "pear" ? 1.04 : def.art.shape === "blob" ? 0.88 : 1.0;
+  const ears =
+    def.art.ears === "long"
+      ? def.size * 0.95
+      : def.art.ears === "pointed"
+        ? def.size * 0.75
+        : def.art.ears === "round"
+          ? def.size * 0.32
+          : 0;
+  return -(def.size * ratioY * 2 + ears);
 }
 
 /**
@@ -174,8 +219,16 @@ export function applyIndividuality(def: PlushDef, seed: number): PlushDef {
     size,
     art: {
       ...def.art,
-      body: shiftHue(def.art.body, iv.hueShift),
-      accent: shiftHue(def.art.accent, iv.hueShift),
+      body: tintColor(def.art.body, {
+        hue: iv.hueShift,
+        satMul: iv.satMul,
+        lightAdd: iv.lightAdd,
+      }),
+      accent: tintColor(def.art.accent, {
+        hue: iv.hueShift,
+        satMul: iv.satMul,
+        lightAdd: iv.lightAdd * 0.6,
+      }),
     },
   };
 }

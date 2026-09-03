@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getPlush } from "../data/plushies";
 import { pickLine } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
-import { NEUTRAL_POSE, type Pose } from "../render/pose";
+import { NEUTRAL_POSE, plushTop, type Pose } from "../render/pose";
 import { useAmbientLife, type AmbientTarget } from "../render/useAmbientLife";
 import { store, useGame } from "../state/store";
 import { SHELF, rowY } from "./shelfLayout";
-import { MeetingCeremony } from "./MeetingCeremony";
+import { useCeremony, CeremonyActors, CeremonyOverlay } from "./MeetingCeremony";
 
 type Props = {
   onGoArcade: () => void;
@@ -26,9 +26,16 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
   const refs = useRef(new Map<string, SVGGElement | null>());
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [squashed, setSquashed] = useState<Record<string, number>>({});
+  /** 演出中はタップのリアクションを止める。コールバックを作り直さずに済ませる */
+  const ceremonyActiveRef = useRef(false);
 
   const ceremonyUid = game.pendingWelcome;
   const onShelf = useMemo(() => game.owned.filter((o) => o.shelfRow >= 0), [game.owned]);
+
+  const ceremony = useCeremony(ceremonyUid, !game.firstMeetingDone, (skipped) =>
+    store.finishWelcome(skipped)
+  );
+  ceremonyActiveRef.current = ceremony.active;
 
   const targets: AmbientTarget[] = useMemo(
     () =>
@@ -37,7 +44,7 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
   );
 
   // 演出中は環境アニメーションを止め、演出側にポーズの制御を渡す
-  useAmbientLife(refs, targets, ceremonyUid === null);
+  useAmbientLife(refs, targets, !ceremony.active);
 
   // 滞在時間を計る。「一覧として消費されている」か「眺めている」かを見分ける指標（仕様17.2）
   useEffect(() => {
@@ -59,7 +66,7 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
 
   const touch = useCallback(
     (uid: string, defId: string, seed: number) => {
-      if (ceremonyUid) return;
+      if (ceremonyActiveRef.current) return;
       store.log("plush_touched", { plushId: defId });
       setBubbles((b) => [
         ...b.filter((x) => x.uid !== uid),
@@ -74,7 +81,7 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
         });
       }, 460);
     },
-    [ceremonyUid]
+    []
   );
 
   return (
@@ -86,13 +93,16 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
 
       <svg
         className="room"
-        viewBox={`0 0 ${SHELF.width} ${SHELF.height + 40}`}
+        viewBox={`0 0 ${SHELF.width} ${SHELF.height + 53}`}
         role="img"
         aria-label="ぬいぐるみの部屋"
       >
         <Room />
 
+        <CeremonyActors ceremony={ceremony} />
+
         {onShelf.map((o) => {
+          if (ceremony.stagedUids.has(o.uid)) return null;
           const def = getPlush(o.defId);
           const y = rowY(o.shelfRow);
           const pose = poseFor(squashed[o.uid]);
@@ -109,7 +119,7 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
               >
                 <PlushSVG def={def} pose={pose} seed={o.seed} />
               </g>
-              {bubble && <Bubble x={o.x} y={-def.size * 2.1} text={bubble.text} />}
+              {bubble && <Bubble x={o.x} y={plushTop(def) - 14} text={bubble.text} />}
             </g>
           );
         })}
@@ -124,13 +134,7 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
         </button>
       </nav>
 
-      {ceremonyUid && (
-        <MeetingCeremony
-          guestUid={ceremonyUid}
-          isFirstMeeting={!game.firstMeetingDone}
-          onDone={(skipped) => store.finishWelcome(skipped)}
-        />
-      )}
+      <CeremonyOverlay ceremony={ceremony} />
     </div>
   );
 }
@@ -144,25 +148,74 @@ function poseFor(touchedAt: number | undefined): Pose {
   return { ...NEUTRAL_POSE, squash };
 }
 
-/** 部屋の背景。壁・窓・床・棚板。木は淡く、影は薄く。 */
+/**
+ * 部屋の背景。
+ *
+ * 「棚の図」ではなく「小さな部屋」に見せるための背景（依頼書4章A）。
+ * 棚板だけを並べると収納棚の設計図に見えてしまうので、
+ * キャビネットの枠・窓・窓からの光・鉢植え・ラグを置いて生活の気配を作る。
+ * 装飾は少なく、彩度は低く、影は薄く。
+ */
 function Room() {
   const w = SHELF.width;
+  const h = SHELF.height;
+  const { frameLeft: fl, frameRight: fr, frameTop: ft } = SHELF;
+
   return (
     <g>
-      <rect x={0} y={0} width={w} height={SHELF.height + 40} fill="#efe7dc" />
-      {/* 窓 */}
-      <rect x={w - 96} y={26} width={72} height={62} rx={8} fill="#dfe8ea" />
-      <rect x={w - 96} y={26} width={72} height={62} rx={8} fill="none" stroke="#d8cbb8" strokeWidth={3} />
-      <line x1={w - 60} y1={26} x2={w - 60} y2={88} stroke="#d8cbb8" strokeWidth={2} />
+      {/* 壁 */}
+      <rect x={0} y={0} width={w} height={h + 40} fill="#efe7dc" />
+      {/* 幅木 */}
+      <rect x={0} y={h + 8} width={w} height={5} fill="#e0d3c0" />
+      {/* 床 */}
+      <rect x={0} y={h + 13} width={w} height={40} fill="#e5d8c5" />
+
+      {/* 窓と、そこから差す光。キャビネットより上に置く */}
+      <g>
+        <rect x={22} y={14} width={74} height={58} rx={9} fill="#dde9ea" />
+        <rect x={22} y={14} width={74} height={58} rx={9} fill="none" stroke="#dccfbb" strokeWidth={4} />
+        <line x1={59} y1={14} x2={59} y2={72} stroke="#dccfbb" strokeWidth={3} />
+        <path d={`M 24 74 L 106 74 L 168 ${h + 13} L 4 ${h + 13} Z`} fill="#fff8ea" opacity={0.3} />
+      </g>
+
+      {/* キャビネット。左右に部屋の余白を残して「部屋の中の家具」に見せる */}
+      <rect x={fl - 9} y={ft - 12} width={fr - fl + 18} height={h + 25 - ft} rx={12} fill="#e4d3b8" />
+      <rect x={fl} y={ft} width={fr - fl} height={h + 10 - ft} fill="#eae1d3" />
+      {/* 側板の内側の陰 */}
+      <rect x={fl} y={ft} width={6} height={h + 10 - ft} fill="#d7c6ae" opacity={0.5} />
+      <rect x={fr - 6} y={ft} width={6} height={h + 10 - ft} fill="#d7c6ae" opacity={0.5} />
+      {/* 天板 */}
+      <rect x={fl - 13} y={ft - 19} width={fr - fl + 26} height={10} rx={5} fill="#d9c3a5" />
+      {/* 脚 */}
+      <rect x={fl + 2} y={h + 13} width={11} height={9} rx={3} fill="#c9ad8c" />
+      <rect x={fr - 13} y={h + 13} width={11} height={9} rx={3} fill="#c9ad8c" />
+
       {/* 棚板 */}
       {SHELF.rowY.map((y) => (
         <g key={y}>
-          <rect x={8} y={y} width={w - 16} height={9} rx={3} fill="#d9c3a5" />
-          <rect x={8} y={y + 9} width={w - 16} height={4} rx={2} fill="#c3a884" opacity={0.7} />
+          <rect x={fl} y={y} width={fr - fl} height={9} rx={2} fill="#d9c3a5" />
+          <rect x={fl} y={y + 9} width={fr - fl} height={5} rx={2} fill="#c3a884" opacity={0.5} />
         </g>
       ))}
-      {/* 床 */}
-      <rect x={0} y={SHELF.height + 14} width={w} height={26} fill="#e3d5c0" />
+
+      {/* 天板の上の小物。生活の気配 */}
+      <g transform={`translate(${fr - 34} ${ft - 19})`}>
+        <path d="M -8 0 L 8 0 L 6 -13 L -6 -13 Z" fill="#cbab8c" />
+        <ellipse cx={0} cy={-13} rx={6.4} ry={2.3} fill="#bd9c7d" />
+        <ellipse cx={-5} cy={-22} rx={5} ry={7.5} fill="#a9bd9a" transform="rotate(-22 -5 -22)" />
+        <ellipse cx={5} cy={-24} rx={4.6} ry={8} fill="#9db08e" transform="rotate(20 5 -24)" />
+        <ellipse cx={0} cy={-28} rx={4.2} ry={6.8} fill="#b3c4a4" />
+      </g>
+
+      {/* 床のかご */}
+      <g transform={`translate(16 ${h + 30})`}>
+        <path d="M -13 0 L 13 0 L 10 -18 L -10 -18 Z" fill="#dcc7a6" />
+        <rect x={-11} y={-20} width={22} height={4} rx={2} fill="#cfb691" />
+      </g>
+
+      {/* ラグ */}
+      <ellipse cx={w / 2 - 30} cy={h + 34} rx={92} ry={13} fill="#ddcdb6" />
+      <ellipse cx={w / 2 - 30} cy={h + 34} rx={62} ry={8} fill="#e6d9c6" />
     </g>
   );
 }

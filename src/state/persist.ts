@@ -4,9 +4,19 @@ import type { CraneBoardSave, LogEvent, LogEventType, OwnedPlush, SaveV1 } from 
 
 export const STORAGE_KEY = "plushcrane.v1";
 
-/** 棚に飾れる最大数。3段 × 4匹（仕様 9章）。 */
-export const SHELF_CAPACITY = 12;
-export const SHELF_ROWS = 3;
+/**
+ * 棚の収容。4段 × 3匹（仕様 9章）。
+ *
+ * スロットの座標はここに集約する。棚の描画（shelfLayout）と
+ * 新しい子の配置（store.findSlot）が別々の定数を持つと必ずずれる。
+ */
+export const SHELF_ROWS = 4;
+export const PER_ROW = 3;
+export const SHELF_CAPACITY = SHELF_ROWS * PER_ROW;
+/** 左端のスロットの中心 x */
+export const SLOT_X0 = 78;
+/** スロット間隔。ぬいぐるみの最大直径 (約72px) より広く取る */
+export const SLOT_SPACING = 82;
 
 /** 最初の子。プレイヤーは起動した瞬間からひとりではない。 */
 const STARTER_DEF_ID = "bear_01";
@@ -33,8 +43,8 @@ export function initialSave(): SaveV1 {
         uid: makeUid(),
         defId: STARTER_DEF_ID,
         acquiredAt: Date.now(),
-        // 格子スロット上に置く。findSlot の占有判定と噛み合わせるため
-        x: 120,
+        // 格子スロット上、真ん中の段の中央に置く
+        x: 160,
         shelfRow: 1,
         seed: Math.random(),
       },

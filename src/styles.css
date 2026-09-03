@@ -112,14 +112,19 @@ button {
 
 /* ---------- 出会いの演出 ---------- */
 
+/*
+  演出の層。ぬいぐるみ自体は部屋の SVG の中で描く（座標系を揃えるため）。
+  この層はタップでのスキップとキャプションだけを担う。
+*/
 .ceremony {
   position: absolute;
   inset: 0;
   z-index: 10;
   display: flex;
   flex-direction: column;
+  justify-content: flex-end;
   cursor: pointer;
-  background: rgba(255, 252, 246, 0.35);
+  background: rgba(255, 252, 246, 0.28);
   animation: ceremony-in 400ms ease;
 }
 
@@ -127,15 +132,6 @@ button {
   from {
     background: rgba(255, 252, 246, 0);
   }
-}
-
-.ceremony-stage {
-  display: block;
-  width: 100%;
-  flex: 1;
-  min-height: 0;
-  margin-top: 36px;
-  pointer-events: none;
 }
 
 .ceremony-caption {

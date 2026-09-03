@@ -6,8 +6,11 @@ import {
   initialSave,
   loadSave,
   makeUid,
+  PER_ROW,
   SHELF_CAPACITY,
   SHELF_ROWS,
+  SLOT_SPACING,
+  SLOT_X0,
   writeSave,
 } from "./persist";
 import type { CraneBoardSave, LogEventType, OwnedPlush, SaveV1 } from "./types";
@@ -65,10 +68,6 @@ function makeLog(
   });
 }
 
-const PER_ROW = SHELF_CAPACITY / SHELF_ROWS;
-const SLOT_SPACING = 80;
-const SLOT_X0 = 40;
-
 /** 有効な段に置かれている個体だけを数える。 */
 function displayed(owned: OwnedPlush[]): OwnedPlush[] {
   return owned.filter(
@@ -77,7 +76,7 @@ function displayed(owned: OwnedPlush[]): OwnedPlush[] {
 }
 
 /**
- * 新しい子を置く場所を探す。1段4匹 × 3段。
+ * 新しい子を置く場所を探す。SHELF_ROWS 段 × PER_ROW 匹。
  *
  * **既にいる子の隣を選ぶ。** これは見た目の都合ではなく、出会いの演出
  * （仕様8章）が「2匹が並ぶ」ことを前提にしているため。離れた段に置くと

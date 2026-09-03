@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { clampToShelf, defaultSlot, SHELF } from "./shelfLayout";
+import { SHELF_CAPACITY, SHELF_ROWS, SLOT_SPACING } from "../state/persist";
 
 describe("clampToShelf", () => {
   it("左端をはみ出さない", () => {
@@ -17,21 +18,22 @@ describe("clampToShelf", () => {
 });
 
 describe("defaultSlot", () => {
-  it("最初の12匹は同じ段で互いに重ならない", () => {
-    const slots = Array.from({ length: 12 }, (_, i) => defaultSlot(i));
+  it("定員分のスロットは同じ段で互いに重ならない", () => {
+    const slots = Array.from({ length: SHELF_CAPACITY }, (_, i) => defaultSlot(i));
     for (let i = 0; i < slots.length; i++) {
       for (let j = i + 1; j < slots.length; j++) {
         if (slots[i].shelfRow !== slots[j].shelfRow) continue;
-        expect(Math.abs(slots[i].x - slots[j].x), `${i}-${j}`).toBeGreaterThanOrEqual(68);
+        expect(Math.abs(slots[i].x - slots[j].x), `${i}-${j}`).toBeGreaterThanOrEqual(72);
       }
     }
   });
 
-  it("全スロットが棚の内側にある", () => {
-    for (let i = 0; i < 12; i++) {
+  it("全スロットがキャビネットの内側にある（側板からはみ出さない）", () => {
+    const MAX_R = 36; // 最大サイズ34 × 個体差1.05
+    for (let i = 0; i < SHELF_CAPACITY; i++) {
       const s = defaultSlot(i);
-      expect(s.x).toBeGreaterThanOrEqual(34);
-      expect(s.x).toBeLessThanOrEqual(SHELF.width - 34);
+      expect(s.x - MAX_R, `slot ${i} 左`).toBeGreaterThanOrEqual(SHELF.frameLeft);
+      expect(s.x + MAX_R, `slot ${i} 右`).toBeLessThanOrEqual(SHELF.frameRight);
       expect(s.shelfRow).toBeGreaterThanOrEqual(0);
       expect(s.shelfRow).toBeLessThan(SHELF.rows);
     }
@@ -44,17 +46,22 @@ describe("defaultSlot", () => {
     expect(Math.abs(b.x - a.x)).toBeLessThan(120);
   });
 
-  it("12匹を超えたら箱の中を表す -1 を返す", () => {
-    expect(defaultSlot(12).shelfRow).toBe(-1);
+  it("定員を超えたら箱の中を表す -1 を返す", () => {
+    expect(defaultSlot(SHELF_CAPACITY).shelfRow).toBe(-1);
     expect(defaultSlot(99).shelfRow).toBe(-1);
   });
 });
 
 describe("SHELF", () => {
-  it("3段あり、段のY座標が上から下に並ぶ", () => {
-    expect(SHELF.rows).toBe(3);
-    expect(SHELF.rowY).toHaveLength(3);
-    expect(SHELF.rowY[0]).toBeLessThan(SHELF.rowY[1]);
-    expect(SHELF.rowY[1]).toBeLessThan(SHELF.rowY[2]);
+  it("段数が定数と一致し、段のY座標が上から下に並ぶ", () => {
+    expect(SHELF.rows).toBe(SHELF_ROWS);
+    expect(SHELF.rowY).toHaveLength(SHELF_ROWS);
+    for (let i = 1; i < SHELF.rowY.length; i++) {
+      expect(SHELF.rowY[i - 1]).toBeLessThan(SHELF.rowY[i]);
+    }
+  });
+
+  it("スロット間隔がぬいぐるみの直径より広い", () => {
+    expect(SLOT_SPACING).toBeGreaterThan(72);
   });
 });

@@ -127,3 +127,22 @@ export function ceremonyAt(ms: number, isFirstMeeting: boolean): CeremonyPhase {
     sparkle: t >= m.bounce && t < m.bounce + 700,
   };
 }
+
+/**
+ * 出会いの演出で「迎える側」になる子を選ぶ。新入りの最近傍1匹。
+ *
+ * ShelfScreen と MeetingCeremony の両方がこれを使う。
+ * 演出中は棚側がこの2匹の描画を止め、演出側が描く。
+ * 両方が描くと同じぬいぐるみが二重に見えるため、選定は必ず1箇所に置く。
+ */
+export function pickHost<T extends { uid: string; x: number; shelfRow: number }>(
+  owned: T[],
+  guestUid: string
+): T | undefined {
+  const guest = owned.find((o) => o.uid === guestUid);
+  if (!guest) return undefined;
+  const others = owned.filter((o) => o.uid !== guestUid && o.shelfRow >= 0);
+  if (others.length === 0) return undefined;
+  const cost = (o: T) => Math.abs(o.x - guest.x) + Math.abs(o.shelfRow - guest.shelfRow) * 400;
+  return others.reduce((best, o) => (cost(o) < cost(best) ? o : best));
+}
