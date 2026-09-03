@@ -35,7 +35,8 @@ function makeLife(seed: number, now: number): Life {
     blinkBase: iv.blinkBase * 1000,
     nextBlink: now + iv.blinkBase * 1000 * (0.4 + iv.linePick * 0.6),
     blinkUntil: 0,
-    nextGlance: now + 12000 + iv.linePick * 8000,
+    // 隣を見る間隔。12〜20秒だと気づかないので 5〜11 秒に詰める
+    nextGlance: now + 5000 + iv.linePick * 6000,
     glanceUntil: 0,
     glanceDir: 0,
   };
@@ -69,8 +70,10 @@ export function useAmbientLife(
     const now = performance.now();
     const lives = new Map<string, Life>(list.map((t) => [t.uid, makeLife(t.seed, now)]));
 
-    // 隣にいる子。いなければ null
+    // 隣にいる子。いなければ登録しない
     const neighborDir = new Map<string, number>();
+    /** 隣が近いほど 1 に近い。寄りかかりの強さに使う */
+    const closeness = new Map<string, number>();
     for (const t of list) {
       const sameRow = list.filter((o) => o.uid !== t.uid && o.shelfRow === t.shelfRow);
       if (sameRow.length === 0) continue;
@@ -78,7 +81,10 @@ export function useAmbientLife(
       for (const o of sameRow) {
         if (Math.abs(o.x - t.x) < Math.abs(best.x - t.x)) best = o;
       }
-      neighborDir.set(t.uid, Math.sign(best.x - t.x));
+      const d = Math.abs(best.x - t.x);
+      neighborDir.set(t.uid, Math.sign(best.x - t.x) || 1);
+      // 100px 以内にいれば「隣にいる」とみなす
+      closeness.set(t.uid, Math.max(0, 1 - d / 100));
     }
 
     let raf = 0;
@@ -93,13 +99,22 @@ export function useAmbientLife(
           const life = lives.get(target.uid);
           if (!el || !life) continue;
 
-          // 呼吸: 個体ごとに位相をずらしたごく小さな上下
-          const breath = Math.sin((t / life.breathPeriod) * Math.PI * 2 + life.breathPhase);
+          // 呼吸: 個体ごとに位相をずらしたごく小さな上下。
+          // 隣に誰かいると、呼吸の位相が少しずつ引き寄せられる。
+          // 並んでいる2匹が同じリズムで息をしていると、
+          // 「一緒にいる」ように見える。
+          const near = closeness.get(target.uid) ?? 0;
+          const phase = life.breathPhase * (1 - near * 0.55);
+          const breath = Math.sin((t / life.breathPeriod) * Math.PI * 2 + phase);
           const sy = 1 + breath * 0.014;
           const sx = 1 - breath * 0.009;
+
+          // 隣の方へごくわずかに傾く。寄りかかっているように見せる。
+          const dir = neighborDir.get(target.uid) ?? 0;
+          const lean = dir * near * 2.2;
           el.setAttribute(
             "transform",
-            `translate(${target.x} 0) scale(${sx.toFixed(4)} ${sy.toFixed(4)})`
+            `translate(${target.x} 0) rotate(${lean.toFixed(2)}) scale(${sx.toFixed(4)} ${sy.toFixed(4)})`
           );
 
           // 瞬き
@@ -115,11 +130,10 @@ export function useAmbientLife(
           }
 
           // 隣を見る
-          const dir = neighborDir.get(target.uid) ?? 0;
           if (dir !== 0 && t >= life.nextGlance) {
             life.glanceUntil = t + GLANCE_MS;
             life.glanceDir = dir;
-            life.nextGlance = t + 12000 + Math.random() * 8000;
+            life.nextGlance = t + 5000 + Math.random() * 6000;
           }
           const face = el.querySelector<SVGGElement>('[data-part="face"]');
           if (face) {
