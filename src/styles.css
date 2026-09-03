@@ -1,0 +1,38 @@
+:root {
+  --paper: #f4efe7;
+  --wall: #efe7dc;
+  --wood: #d9c3a5;
+  --wood-dark: #c3a884;
+  --ink: #5b4636;
+  --ink-soft: #8a7a6a;
+  --shadow: rgba(74, 58, 44, 0.08);
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo,
+    system-ui, sans-serif;
+  letter-spacing: 0.04em;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+body {
+  min-height: 100dvh;
+}
+
+.app {
+  width: min(100vw, 480px);
+  margin: 0 auto;
+  min-height: 100dvh;
+}
