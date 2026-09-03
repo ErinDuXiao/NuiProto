@@ -40,15 +40,26 @@ function fromBase64Url(s: string): string {
  *
  * ぬいぐるみの名前は日本語なので、btoa に直接渡さず UTF-8 を経由する。
  */
+/** 直列化する最大件数。壊れた保存データで巨大な文字列を作らない。 */
+const MAX_ENCODED = 64;
+/** 復元を受け付ける最大文字数。 */
+const MAX_ENCODED_CHARS = 8192;
+
 export function encodeShelf(owned: OwnedPlush[]): string {
   const compact: Compact[] = owned
     .filter((o) => o.shelfRow >= 0)
+    .slice(0, MAX_ENCODED)
     .map((o) => [o.defId, Math.round(o.x), o.shelfRow, Math.round(o.seed * 1000) / 1000]);
-  return toBase64Url(JSON.stringify(compact));
+  try {
+    return toBase64Url(JSON.stringify(compact));
+  } catch {
+    return "";
+  }
 }
 
 export function decodeShelf(s: string): OwnedPlush[] | null {
-  if (!s || !/^[A-Za-z0-9\-_]*$/.test(s)) return null;
+  if (!s || s.length > MAX_ENCODED_CHARS) return null;
+  if (!/^[A-Za-z0-9\-_]*$/.test(s)) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(fromBase64Url(s));
@@ -58,11 +69,13 @@ export function decodeShelf(s: string): OwnedPlush[] | null {
   if (!Array.isArray(parsed)) return null;
 
   const out: OwnedPlush[] = [];
-  for (const [i, item] of parsed.entries()) {
+  for (const [i, item] of parsed.slice(0, MAX_ENCODED).entries()) {
     if (!Array.isArray(item)) continue;
     const [defId, x, row, seed] = item as Compact;
     if (typeof defId !== "string" || !hasPlush(defId)) continue;
-    if (typeof x !== "number" || typeof row !== "number") continue;
+    // 有限で、段は整数であること。1.5 段や巨大な x を通さない。
+    if (typeof x !== "number" || !Number.isFinite(x) || Math.abs(x) > 4000) continue;
+    if (typeof row !== "number" || !Number.isInteger(row)) continue;
     if (row < 0 || row >= SHELF.rows) continue;
     out.push({
       uid: `s${i}`,
@@ -276,15 +289,20 @@ export async function shareShelf(blob: Blob): Promise<ShareResult> {
     // クリップボードが使えない環境。ダウンロードへ落とす。
   }
 
+  let url: string | null = null;
   try {
-    const url = URL.createObjectURL(blob);
+    url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = "my-shelf.png";
     a.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const created = url;
+    window.setTimeout(() => URL.revokeObjectURL(created), 1000);
+    url = null;
     return { method: "download", ok: true };
   } catch {
+    // 途中で失敗しても URL を残さない
+    if (url) URL.revokeObjectURL(url);
     return { method: "download", ok: false };
   }
 }

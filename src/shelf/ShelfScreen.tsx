@@ -4,6 +4,7 @@ import { pickLine } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
 import { NEUTRAL_POSE, plushTop, type Pose } from "../render/pose";
 import { useAmbientLife, type AmbientTarget } from "../render/useAmbientLife";
+import { sfx } from "../audio/sfx";
 import { store, useGame } from "../state/store";
 import { SHELF, rowY } from "./shelfLayout";
 import { useDragPlacement } from "./useDragPlacement";
@@ -12,6 +13,8 @@ import { useCeremony, CeremonyActors, CeremonyOverlay } from "./MeetingCeremony"
 type Props = {
   onGoArcade: () => void;
   onShare: () => void;
+  /** 隅の小さなドット。3回押すと Developer Menu が開く（依頼書25章） */
+  onSecretTap: () => void;
 };
 
 type Bubble = { uid: string; text: string; until: number };
@@ -22,7 +25,7 @@ type Bubble = { uid: string; text: string; until: number };
  * 「インベントリ」や「コレクション一覧」に見せてはいけない（依頼書4章A）。
  * グリッド線・枠・通し番号・収集率（"2/10"）は一切出さない。
  */
-export function ShelfScreen({ onGoArcade, onShare }: Props) {
+export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
   const game = useGame();
   const refs = useRef(new Map<string, SVGGElement | null>());
   const svgRef = useRef<SVGSVGElement>(null);
@@ -105,6 +108,8 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
       const target = ownedRef.current.find((o) => o.uid === uid);
       if (!target) return;
       const { defId, seed } = target;
+      sfx.init();
+      sfx.place();
       store.log("plush_touched", { plushId: defId });
       setBubbles((b) => [
         ...b.filter((x) => x.uid !== uid),
@@ -131,6 +136,7 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
       <header className="shelf-header">
         <span className="shelf-title">ぬいぐるみのおうち</span>
         <span className="shelf-count">おともだち {game.owned.length}</span>
+        <MuteToggle />
       </header>
 
       <svg
@@ -186,7 +192,29 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
       </nav>
 
       <CeremonyOverlay ceremony={ceremony} />
+
+      {/* Developer Menu の入口。通常プレイヤーの目に触れない大きさにする */}
+      <button className="secret-dot" aria-hidden="true" tabIndex={-1} onClick={onSecretTap} />
     </div>
+  );
+}
+
+/** 音のオン・オフ。小さく、常に出しておく（仕様13章）。 */
+function MuteToggle() {
+  const [muted, setMuted] = useState(sfx.isMuted());
+  return (
+    <button
+      className="mute-btn"
+      aria-label={muted ? "音を出す" : "音を消す"}
+      onClick={() => {
+        sfx.init();
+        const next = !muted;
+        sfx.setMuted(next);
+        setMuted(next);
+      }}
+    >
+      {muted ? "♪ off" : "♪ on"}
+    </button>
   );
 }
 

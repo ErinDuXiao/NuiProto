@@ -106,21 +106,25 @@ export function resolveOverlaps(items: Placed[]): PlacedOut[] {
         .filter((w) => w.shelfRow === row)
         .sort((a, b) => a.x - b.x || a.uid.localeCompare(b.uid));
 
-      // 左から順に、最低間隔を空けながら詰める
-      let cursor = -Infinity;
+      // 左から順に、最低間隔を空けながら詰める。
+      // 間隔は「隣り合う2匹の半径の和」で決める。片方の半径だけで
+      // 決めると、大きい子と小さい子が隣り合ったときに重なる。
+      let prev: Placed | null = null;
       for (const w of inRow) {
         const [lo, hi] = bounds(w.r);
-        const want = Math.max(w.x, cursor === -Infinity ? lo : cursor);
-        const next = Math.min(hi, Math.max(lo, want));
+        const minX = prev ? prev.x + (prev.r + w.r) * 0.94 : lo;
+        const next = Math.min(hi, Math.max(lo, Math.max(w.x, minX)));
         if (Math.abs(next - w.x) > 0.01) {
           w.x = next;
           changed = true;
         }
-        cursor = w.x + w.r * 2 * 0.94;
+        prev = w;
       }
 
       // 右端に収まりきらなかった個体を、空きのある段へ逃がす
-      const overflow = inRow.filter((w, i) => i > 0 && w.x - inRow[i - 1].x < w.r * 1.6);
+      const overflow = inRow.filter(
+        (w, i) => i > 0 && w.x - inRow[i - 1].x < (inRow[i - 1].r + w.r) * 0.9
+      );
       for (const w of overflow) {
         const target = freestRow(work, row);
         if (target === row) break; // どこにも空きがない。重なったままでも消さない

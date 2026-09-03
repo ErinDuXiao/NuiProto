@@ -129,6 +129,14 @@ describe("resolveOverlaps", () => {
     expect(resolveOverlaps(same)).toHaveLength(8);
   });
 
+  it("大きさの違う個体が隣り合っても重ならない", () => {
+    // 片方の半径だけで間隔を決めると、大きい子と小さい子で重なる
+    const mixed = [item("small", 100, 0, 26), item("big", 120, 0, 34)];
+    const out = resolveOverlaps(mixed);
+    const gap = Math.abs(out[0].x - out[1].x);
+    expect(gap).toBeGreaterThanOrEqual((26 + 34) * 0.9);
+  });
+
   it("入力を書き換えない", () => {
     const input = [item("a", 100), item("b", 105)];
     resolveOverlaps(input);

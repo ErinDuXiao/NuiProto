@@ -38,6 +38,8 @@ type Options = {
 export function useDragPlacement({ owned, svgRef, enabled, onTap }: Options) {
   const [drag, setDrag] = useState<DragState>(null);
   const startRef = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null);
+  /** 掴んでいる指の識別子。2本目の指に乗っ取られないようにする */
+  const pointerIdRef = useRef<number | null>(null);
   const dragRef = useRef<DragState>(null);
   dragRef.current = drag;
 
@@ -65,6 +67,8 @@ export function useDragPlacement({ owned, svgRef, enabled, onTap }: Options) {
   const onPointerDown = useCallback(
     (uid: string, e: React.PointerEvent) => {
       if (!enabled) return;
+      // 既に別の指で掴んでいる。2本目は無視する。
+      if (pointerIdRef.current !== null) return;
       const target = owned.find((o) => o.uid === uid);
       if (!target || target.shelfRow < 0) return;
       const local = toLocal(e.clientX, e.clientY);
@@ -77,6 +81,7 @@ export function useDragPlacement({ owned, svgRef, enabled, onTap }: Options) {
       } catch {
         // noop
       }
+      pointerIdRef.current = e.pointerId;
       startRef.current = { px: local.x, py: local.y, ox: target.x, oy: target.shelfRow };
       setDrag({
         uid,
@@ -94,6 +99,7 @@ export function useDragPlacement({ owned, svgRef, enabled, onTap }: Options) {
     if (!drag) return;
 
     const move = (e: PointerEvent) => {
+      if (e.pointerId !== pointerIdRef.current) return;
       const start = startRef.current;
       const cur = dragRef.current;
       if (!start || !cur) return;
@@ -114,11 +120,21 @@ export function useDragPlacement({ owned, svgRef, enabled, onTap }: Options) {
       });
     };
 
-    const finish = () => {
+    /**
+     * 指が離れた。掴んでいた指のものだけを見る。
+     * @param commit 配置を確定するか。pointercancel では確定しない。
+     */
+    const end = (e: PointerEvent, commit: boolean) => {
+      if (e.pointerId !== pointerIdRef.current) return;
       const cur = dragRef.current;
+      pointerIdRef.current = null;
       startRef.current = null;
       setDrag(null);
       if (!cur) return;
+
+      // ブラウザにジェスチャを奪われた場合。撫でたことにも、
+      // 動かしたことにもせず、何もなかったことにする。
+      if (!commit) return;
 
       if (!cur.moved) {
         onTap(cur.uid);
@@ -139,13 +155,18 @@ export function useDragPlacement({ owned, svgRef, enabled, onTap }: Options) {
       }
     };
 
+    const onUp = (e: PointerEvent) => end(e, true);
+    const onCancel = (e: PointerEvent) => end(e, false);
+
     window.addEventListener("pointermove", move, { passive: false });
-    window.addEventListener("pointerup", finish);
-    window.addEventListener("pointercancel", finish);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
     return () => {
       window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", finish);
-      window.removeEventListener("pointercancel", finish);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      // ドラッグ中にアンマウントされた場合、掴んだ指を解放しておく
+      pointerIdRef.current = null;
     };
   }, [drag !== null, owned, toLocal, onTap]);
 

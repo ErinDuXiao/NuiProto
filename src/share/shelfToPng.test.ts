@@ -46,6 +46,18 @@ describe("encodeShelf / decodeShelf", () => {
     expect(decodeShelf(s)).toHaveLength(2);
   });
 
+  it("段が整数でない・座標が非有限な入力を拒む", () => {
+    const bad = btoa(JSON.stringify([["bear_01", 100, 1.5, 0.5], ["bear_01", 1e9, 1, 0.5]]))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    expect(decodeShelf(bad)).toEqual([]);
+  });
+
+  it("極端に長い入力を拒む（資源を食わせない）", () => {
+    expect(decodeShelf("A".repeat(20000))).toBeNull();
+  });
+
   it("多数所持でも壊れない", () => {
     const many: OwnedPlush[] = Array.from({ length: 12 }, (_, i) => ({
       uid: `u${i}`,

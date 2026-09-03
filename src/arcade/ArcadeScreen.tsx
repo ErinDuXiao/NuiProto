@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { sfx } from "../audio/sfx";
 import { store, useGame } from "../state/store";
 import { boardToSave, makeBoard, restoreBoard } from "./board";
 import { CraneView, VIEW } from "./CraneView";
@@ -16,6 +17,7 @@ import { moodFor, type WatcherMood } from "./watcherState";
 type Props = {
   onGoShelf: () => void;
   debugPhysics: boolean;
+  showFps: boolean;
 };
 
 /** 画面に流すスナップショット。物理の内部状態はここに漏らさない。 */
@@ -40,7 +42,7 @@ const PIT = DEFAULT_PIT;
  *   横移動 → 決定 → 奥移動 → 決定 → 自動で下降
  * 説明されなくても分かることを、操作の複雑さより優先する。
  */
-export function ArcadeScreen({ onGoShelf, debugPhysics }: Props) {
+export function ArcadeScreen({ onGoShelf, debugPhysics, showFps }: Props) {
   const game = useGame();
 
   const bodiesRef = useRef<Body[]>([]);
@@ -78,6 +80,7 @@ export function ArcadeScreen({ onGoShelf, debugPhysics }: Props) {
     return () => {
       store.log("shelf_return");
       window.clearTimeout(returnTimer.current);
+      sfx.move(false);
     };
   }, []);
 
@@ -115,6 +118,7 @@ export function ArcadeScreen({ onGoShelf, debugPhysics }: Props) {
         acc -= STEP;
         steps++;
         const r = step(bodies, PIT, STEP);
+        if (r.impacts > 0) sfx.bump(Math.min(1, r.impacts * 0.4));
         for (const id of r.fallen) handleEvent({ kind: "won", bodyId: id });
         for (const e of tickCrane(crane, bodies, PIT, STEP)) handleEvent(e);
       }
@@ -182,6 +186,7 @@ export function ArcadeScreen({ onGoShelf, debugPhysics }: Props) {
     const crane = craneRef.current;
     switch (e.kind) {
       case "drop":
+        sfx.descend();
         store.log("crane_drop", { attempt: crane.attemptsOnBoard });
         break;
       case "grabbed":
@@ -189,6 +194,7 @@ export function ArcadeScreen({ onGoShelf, debugPhysics }: Props) {
         break;
       case "released":
       case "nudged":
+        sfx.koron();
         store.log("plush_dropped", { attempt: crane.attemptsOnBoard });
         break;
       case "settled":
@@ -197,6 +203,7 @@ export function ArcadeScreen({ onGoShelf, debugPhysics }: Props) {
       case "won": {
         if (wonRef.current) break;
         wonRef.current = true;
+        sfx.success();
         const defId = e.bodyId?.split("#")[0];
         if (defId) {
           store.bumpAttempts();
@@ -222,8 +229,10 @@ export function ArcadeScreen({ onGoShelf, debugPhysics }: Props) {
   const busy = state !== "idle" && state !== "aimX" && state !== "aimZ";
 
   const confirm = () => {
+    sfx.init();
     const c = craneRef.current;
     dirRef.current = 0;
+    sfx.move(false);
     if (c.state === "idle") {
       // 位置を動かさずに決定した場合も先へ進める
       c.state = "aimZ";
@@ -237,12 +246,15 @@ export function ArcadeScreen({ onGoShelf, debugPhysics }: Props) {
   };
 
   const hold = (d: number) => () => {
+    sfx.init();
     const c = craneRef.current;
     if (c.state === "idle") c.state = "aimX";
     dirRef.current = d;
+    sfx.move(true);
   };
   const release = () => {
     dirRef.current = 0;
+    sfx.move(false);
   };
 
   return (
@@ -300,7 +312,7 @@ export function ArcadeScreen({ onGoShelf, debugPhysics }: Props) {
         </button>
       </nav>
 
-      {debugPhysics && <div className="fps">{fps} fps</div>}
+      {showFps && <div className="fps">{fps} fps</div>}
     </div>
   );
 }

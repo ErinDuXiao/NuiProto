@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { sfx } from "../audio/sfx";
 import { getPlush } from "../data/plushies";
 import { pickLine } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
@@ -81,6 +82,7 @@ export function useCeremony(
     const started = performance.now();
     let raf = 0;
     let finishTimer = 0;
+    let landed = false;
 
     const finish = () => {
       if (doneRef.current === guestUid) return;
@@ -90,7 +92,13 @@ export function useCeremony(
 
     const tick = (now: number) => {
       const t = now - started;
-      setPhase(ceremonyAt(t, isFirstMeeting, linesRef.current));
+      const next = ceremonyAt(t, isFirstMeeting, linesRef.current);
+      // 新入りが着地した瞬間に一度だけ「ころん」
+      if (!landed && next.guestDrop === 0) {
+        landed = true;
+        sfx.koron();
+      }
+      setPhase(next);
       if (t >= duration) {
         // 最終状態を一瞬見せてから配置操作を解放する
         finishTimer = window.setTimeout(finish, 500);

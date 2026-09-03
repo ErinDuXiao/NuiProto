@@ -25,7 +25,19 @@ body {
     system-ui, sans-serif;
   letter-spacing: 0.04em;
   -webkit-font-smoothing: antialiased;
+  /* 引っぱって更新・端でのバウンドを止める。ドラッグ配置と喧嘩するため */
   overscroll-behavior: none;
+  overflow: hidden;
+  /* ダブルタップ拡大を止める */
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* 文字の選択は要らない。ぬいぐるみを掴むときに青く反転すると興ざめする */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
@@ -72,6 +84,17 @@ button {
 .shelf-count {
   font-size: 12px;
   color: var(--ink-soft);
+  margin-left: auto;
+}
+
+.mute-btn {
+  border: none;
+  background: none;
+  color: var(--ink-soft);
+  font-size: 11px;
+  padding: 4px 2px 4px 12px;
+  cursor: pointer;
+  opacity: 0.7;
 }
 
 .room {
@@ -81,7 +104,11 @@ button {
   min-height: 0;
   user-select: none;
   -webkit-user-select: none;
-  touch-action: manipulation;
+  /*
+    none にしないと、しきい値を超える前にブラウザがスクロールとして
+    ジェスチャを奪い、pointercancel でドラッグが中断される。
+  */
+  touch-action: none;
 }
 
 .shelf-actions {
@@ -293,4 +320,119 @@ button {
 .sheet-actions {
   display: flex;
   gap: 10px;
+}
+
+/* ---------- Developer Menu ---------- */
+
+.secret-dot {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(140, 122, 100, 0.14);
+  cursor: default;
+}
+
+.sheet-body.dev {
+  max-width: 360px;
+  max-height: 86vh;
+  overflow-y: auto;
+  gap: 10px;
+}
+
+.dev-title {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+}
+
+.dev-stat {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.dev-warn {
+  color: #b06a5a;
+}
+
+.dev-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn.tiny {
+  flex: 1 1 auto;
+  padding: 9px 10px;
+  font-size: 12px;
+  border-radius: 10px;
+}
+
+.dev-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  flex: 1;
+}
+
+.dev-series-name {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.dev-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+}
+
+.dev-plush {
+  border: none;
+  background: none;
+  padding: 2px;
+  cursor: pointer;
+  font-size: 9px;
+  color: var(--ink-soft);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.dev-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+/*
+  動きを減らす設定を尊重する。ただし完全には止めない。
+  出会いの演出はこのゲームの中心で、消すと体験が成立しないため、
+  時間を詰めるだけにとどめる。
+*/
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* PC では画面の左右に余白ができる。そこも部屋の壁の色にする */
+@media (min-width: 520px) {
+  body {
+    background: #e4dcd0;
+  }
+
+  .app {
+    box-shadow: 0 0 60px rgba(90, 72, 56, 0.1);
+  }
 }
