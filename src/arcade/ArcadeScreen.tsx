@@ -185,10 +185,20 @@ export function ArcadeScreen({ onGoShelf, debugPhysics, showFps }: Props) {
     lastEventRef.current = e;
     const crane = craneRef.current;
     switch (e.kind) {
-      case "drop":
+      case "drop": {
         sfx.descend();
-        store.log("crane_drop", { attempt: crane.attemptsOnBoard });
+        // 通算プレイ回数は「落とした回数」。獲得できたかは関係ない（仕様7.4）
+        store.bumpAttempts();
+        // 照準誤差を残す。仕様7.6 の σ を実測で較正するために使う
+        const target = crane.targetId
+          ? bodiesRef.current.find((b) => b.id === crane.targetId)
+          : undefined;
+        const d = target
+          ? Math.round(Math.hypot(target.x - crane.armX, target.z - crane.armZ))
+          : -1;
+        store.log("crane_drop", { attempt: crane.attemptsOnBoard, meta: { d } });
         break;
+      }
       case "grabbed":
         store.log("plush_grabbed", { attempt: crane.attemptsOnBoard });
         break;
@@ -206,7 +216,6 @@ export function ArcadeScreen({ onGoShelf, debugPhysics, showFps }: Props) {
         sfx.success();
         const defId = e.bodyId?.split("#")[0];
         if (defId) {
-          store.bumpAttempts();
           store.winPlush(defId);
           store.saveBoard(null);
           // 少し余韻を置いてから棚へ帰る
