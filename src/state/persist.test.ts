@@ -109,6 +109,65 @@ describe("persist", () => {
     expect(back.owned[0].shelfRow).toBeLessThan(3);
   });
 
+  it("未知のイベント種別を持つログは捨てる", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        owned: [{ uid: "a", defId: "bear_01", acquiredAt: 1, x: 120, shelfRow: 1, seed: 0.5 }],
+        log: [
+          { type: "shelf_view", t: 1, sessionId: "s" },
+          { type: "garbage", t: 2, sessionId: "s" },
+          { type: "plush_won", t: 3, sessionId: "s", meta: null },
+        ],
+      })
+    );
+    const log = loadSave().log;
+    expect(log).toHaveLength(2);
+    expect(log.every((e) => e.type !== ("garbage" as never))).toBe(true);
+  });
+
+  it("巨大なログは上限で切り詰める", () => {
+    const many = Array.from({ length: 5000 }, (_, i) => ({
+      type: "shelf_view",
+      t: i,
+      sessionId: "s",
+    }));
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        owned: [{ uid: "a", defId: "bear_01", acquiredAt: 1, x: 120, shelfRow: 1, seed: 0.5 }],
+        log: many,
+      })
+    );
+    expect(loadSave().log.length).toBeLessThanOrEqual(2000);
+  });
+
+  it("uidが重複していたら振り直す", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        owned: [
+          { uid: "same", defId: "bear_01", acquiredAt: 1, x: 120, shelfRow: 1, seed: 0.5 },
+          { uid: "same", defId: "fox_01", acquiredAt: 2, x: 200, shelfRow: 1, seed: 0.5 },
+        ],
+        log: [],
+      })
+    );
+    const owned = loadSave().owned;
+    expect(new Set(owned.map((o) => o.uid)).size).toBe(2);
+  });
+
+  it("writeSaveは成否を返す", () => {
+    expect(writeSave(initialSave())).toBe(true);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    expect(writeSave(initialSave())).toBe(false);
+  });
+
   it("localStorageが書けなくても例外を投げない", () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("QuotaExceededError");

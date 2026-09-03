@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { individuality, applyIndividuality, NEUTRAL_POSE, lerp, lerpPose } from "./pose";
+import { individuality, applyIndividuality, shiftHue, NEUTRAL_POSE, lerp, lerpPose } from "./pose";
 import { getPlush } from "../data/plushies";
 
 describe("individuality", () => {
@@ -59,10 +59,42 @@ describe("individuality", () => {
     }
   });
 
+  it("NaN / Infinity / 巨大なseedでもNaNを返さない", () => {
+    for (const bad of [Number.NaN, Infinity, -Infinity, Number.MAX_VALUE, -0]) {
+      const iv = individuality(bad);
+      for (const [k, v] of Object.entries(iv)) {
+        expect(Number.isFinite(v), `${k} @ ${bad}`).toBe(true);
+      }
+    }
+  });
+
+  it("壊れたseedでもdefのsizeと色が有効なまま", () => {
+    for (const bad of [Number.NaN, Infinity, Number.MAX_VALUE]) {
+      const v = applyIndividuality(getPlush("bear_01"), bad);
+      expect(Number.isFinite(v.size), `${bad}`).toBe(true);
+      expect(v.art.body, `${bad}`).toMatch(/^#[0-9a-f]{6}$/i);
+    }
+  });
+
   it("同種2匹はseedが違えば見た目が違う（愛着の前提）", () => {
     const a = applyIndividuality(getPlush("rabbit_01"), 0.2);
     const b = applyIndividuality(getPlush("rabbit_01"), 0.8);
     expect(a.art.body).not.toBe(b.art.body);
+  });
+});
+
+describe("shiftHue", () => {
+  it("正常な色を回せる", () => {
+    expect(shiftHue("#c9a37c", 10)).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(shiftHue("#abc", 10)).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+
+  it("不正な色や角度は入力をそのまま返す（NaNを描画しない）", () => {
+    for (const bad of ["", "not-a-color", "#12", "#1234567", "rgb(1,2,3)"]) {
+      expect(shiftHue(bad, 10)).toBe(bad);
+    }
+    expect(shiftHue("#c9a37c", Number.NaN)).toBe("#c9a37c");
+    expect(shiftHue("#c9a37c", Infinity)).toBe("#c9a37c");
   });
 });
 

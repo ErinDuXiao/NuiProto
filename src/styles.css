@@ -5,6 +5,7 @@
   --wood-dark: #c3a884;
   --ink: #5b4636;
   --ink-soft: #8a7a6a;
+  --card: #fffaf3;
   --shadow: rgba(74, 58, 44, 0.08);
 
   color-scheme: light;
@@ -18,7 +19,7 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: var(--paper);
+  background: #e9e2d7;
   color: var(--ink);
   font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo,
     system-ui, sans-serif;
@@ -31,8 +32,131 @@ body {
   min-height: 100dvh;
 }
 
+button {
+  font-family: inherit;
+  letter-spacing: inherit;
+}
+
 .app {
-  width: min(100vw, 480px);
+  width: min(100vw, 460px);
   margin: 0 auto;
   min-height: 100dvh;
+  background: var(--paper);
+  position: relative;
+  overflow: hidden;
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ---------- 棚 ---------- */
+
+.shelf-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 14px 18px 8px;
+}
+
+.shelf-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.shelf-count {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.room {
+  display: block;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.shelf-actions {
+  display: flex;
+  gap: 10px;
+  padding: 12px 18px 20px;
+}
+
+.btn {
+  flex: 1;
+  border: none;
+  border-radius: 14px;
+  padding: 13px 16px;
+  font-size: 14px;
+  color: var(--ink);
+  background: #e6dccd;
+  cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn.primary {
+  background: var(--wood);
+}
+
+/* ---------- 出会いの演出 ---------- */
+
+.ceremony {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  background: rgba(255, 252, 246, 0.35);
+  animation: ceremony-in 400ms ease;
+}
+
+@keyframes ceremony-in {
+  from {
+    background: rgba(255, 252, 246, 0);
+  }
+}
+
+.ceremony-stage {
+  display: block;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  margin-top: 36px;
+  pointer-events: none;
+}
+
+.ceremony-caption {
+  margin: 0 0 96px;
+  text-align: center;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  color: var(--ink-soft);
+  animation: caption-in 700ms ease;
+}
+
+@keyframes caption-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ceremony,
+  .ceremony-caption {
+    animation-duration: 1ms;
+  }
 }

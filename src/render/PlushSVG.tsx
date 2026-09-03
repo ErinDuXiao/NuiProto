@@ -90,6 +90,12 @@ export function PlushSVG({ def, pose, seed }: Props) {
       <ellipse cx={-rx * 0.56} cy={eyeY + 6} rx={r * 0.16} ry={r * 0.1} fill="#e8a8a8" opacity={0.4} />
       <ellipse cx={rx * 0.56} cy={eyeY + 6} rx={r * 0.16} ry={r * 0.1} fill="#e8a8a8" opacity={0.4} />
 
+      {/*
+        顔のパーツはまとめて 1 つの <g> に入れる。
+        棚の環境アニメーション（useAmbientLife）が React の再レンダーを起こさずに
+        視線を動かせるよう、この <g> の transform だけを直接書き換える。
+      */}
+      <g data-part="face">
       {/* 目。閉じているときは線に置き換える */}
       {pose.eyeOpen > 0.08 ? (
         <>
@@ -165,6 +171,7 @@ export function PlushSVG({ def, pose, seed }: Props) {
           />
         </>
       )}
+      </g>
     </g>
   );
 }

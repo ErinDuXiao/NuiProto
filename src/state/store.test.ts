@@ -92,6 +92,61 @@ describe("store", () => {
     expect(s.owned.filter((o) => o.shelfRow === -1).length).toBe(3);
   });
 
+  it("2匹目は1匹目と同じ段の隣に来る（出会いの演出の前提）", () => {
+    const bear = store.get().owned[0];
+    store.winPlush("rabbit_01");
+    const rabbit = store.get().owned[1];
+    expect(rabbit.shelfRow).toBe(bear.shelfRow);
+    expect(Math.abs(rabbit.x - bear.x)).toBeLessThanOrEqual(80);
+  });
+
+  it("3匹目・4匹目も既にいる子の近くに来る", () => {
+    store.winPlush("rabbit_01");
+    store.winPlush("fox_01");
+    store.winPlush("frog_01");
+    const onShelf = store.get().owned.filter((o) => o.shelfRow >= 0);
+    for (const o of onShelf) {
+      const nearest = onShelf
+        .filter((x) => x.uid !== o.uid)
+        .reduce(
+          (m, x) => Math.min(m, Math.abs(x.x - o.x) + (x.shelfRow === o.shelfRow ? 0 : 400)),
+          Infinity
+        );
+      expect(nearest, o.defId).toBeLessThanOrEqual(160);
+    }
+  });
+
+  it("箱の中の子を棚へ出そうとしても定員13匹目にはならない", () => {
+    for (let i = 0; i < 12; i++) store.winPlush("duck_01");
+    const boxed = store.get().owned.find((o) => o.shelfRow === -1);
+    expect(boxed).toBeDefined();
+    store.movePlush(boxed!.uid, 160, 0);
+    expect(store.get().owned.filter((o) => o.shelfRow >= 0)).toHaveLength(SHELF_CAPACITY);
+  });
+
+  it("movePlushにNaNや範囲外の段を渡しても状態が壊れない", () => {
+    const uid = store.get().owned[0].uid;
+    store.movePlush(uid, Number.NaN, 99);
+    const o = store.get().owned[0];
+    expect(Number.isFinite(o.x)).toBe(true);
+    expect(o.shelfRow).toBeLessThan(3);
+    expect(o.shelfRow).toBeGreaterThanOrEqual(-1);
+  });
+
+  it("購読者が例外を投げても他の購読者に通知が届く", () => {
+    let reached = false;
+    const un1 = store.subscribe(() => {
+      throw new Error("boom");
+    });
+    const un2 = store.subscribe(() => {
+      reached = true;
+    });
+    expect(() => store.winPlush("rabbit_01")).not.toThrow();
+    expect(reached).toBe(true);
+    un1();
+    un2();
+  });
+
   it("movePlushで配置が変わり永続化される", () => {
     const uid = store.get().owned[0].uid;
     store.movePlush(uid, 250, 2);

@@ -71,8 +71,11 @@ export type Individuality = {
  * 名前や個体ステータスを持たせる代わりに、この微差だけで別の子に見せる。
  */
 export function individuality(seed: number): Individuality {
+  // NaN / Infinity / 巨大値が来ても SVG 属性に NaN を流さない。
+  // seed は保存データ由来なので、何が入っていても描画は壊れてはならない。
+  const s = Number.isFinite(seed) ? Math.abs(seed) % 1 : 0;
   const f = (n: number) => {
-    const x = Math.sin(seed * 9973 + n * 137.13) * 43758.5453;
+    const x = Math.sin(s * 9973 + n * 137.13) * 43758.5453;
     return x - Math.floor(x);
   };
   return {
@@ -143,9 +146,17 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   return [hue(hn + 1 / 3) * 255, hue(hn) * 255, hue(hn - 1 / 3) * 255];
 }
 
-/** hex 色の色相を deg だけ回す。外部ライブラリを使わない純粋関数。 */
+const HEX_RE = /^#?(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+/**
+ * hex 色の色相を deg だけ回す。外部ライブラリを使わない純粋関数。
+ * 不正な色や非有限の角度が来た場合は入力をそのまま返す。
+ * SVG の fill に "#NaNNaNNaN" を流さないことを最優先する。
+ */
 export function shiftHue(hex: string, deg: number): string {
-  const [r, g, b] = hexToRgb(hex);
+  if (typeof hex !== "string" || !HEX_RE.test(hex.trim())) return hex;
+  if (!Number.isFinite(deg)) return hex;
+  const [r, g, b] = hexToRgb(hex.trim());
   const [h, s, l] = rgbToHsl(r, g, b);
   const [nr, ng, nb] = hslToRgb(h + deg, s, l);
   return rgbToHex(nr, ng, nb);
@@ -157,9 +168,10 @@ export function shiftHue(hex: string, deg: number): string {
  */
 export function applyIndividuality(def: PlushDef, seed: number): PlushDef {
   const iv = individuality(seed);
+  const size = Number.isFinite(def.size) ? def.size * iv.scale : 30;
   return {
     ...def,
-    size: def.size * iv.scale,
+    size,
     art: {
       ...def.art,
       body: shiftHue(def.art.body, iv.hueShift),
