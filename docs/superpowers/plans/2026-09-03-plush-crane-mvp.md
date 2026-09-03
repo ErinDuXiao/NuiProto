@@ -580,11 +580,11 @@ git commit -m "feat: PlushSVG レンダラと個体差"
   - `type CraneBoardSave = { prizes: { defId: string; x: number; z: number }[]; attemptsOnBoard: number }`
   - `type LogEventType`（仕様11章の全16種）
   - `type LogEvent = { type: LogEventType; t: number; sessionId: string; plushId?: string; attempt?: number; meta?: Record<string, number | string | boolean> }`
-  - `type SaveV1 = { version: 1; sessionCount: number; owned: OwnedPlush[]; craneBoard: CraneBoardSave | null; attempts: number; pendingWelcome: string | null; log: LogEvent[] }`
+  - `type SaveV1 = { version: 1; sessionCount: number; owned: OwnedPlush[]; craneBoard: CraneBoardSave | null; attempts: number; pendingWelcome: string | null; firstMeetingDone: boolean; log: LogEvent[] }`
   - `loadSave(): SaveV1`, `writeSave(s: SaveV1): void`, `initialSave(): SaveV1`, `STORAGE_KEY`
   - `pushLog(log: LogEvent[], ev: LogEvent): LogEvent[]`, `LOG_LIMIT = 2000`
   - `store`: `{ get(): SaveV1; subscribe(cb): () => void; ... }` と `useGame(): SaveV1`
-  - アクション: `winPlush(defId: string): string`（返り値 uid）, `clearPendingWelcome(): void`, `movePlush(uid, x, shelfRow): void`, `saveBoard(b: CraneBoardSave | null): void`, `bumpAttempts(): void`, `log(type, extra?): void`, `resetAll(): void`, `grantPlush(defId): void`
+  - アクション: `winPlush(defId: string): string`（返り値 uid）, `finishWelcome(skipped: boolean): void`（`pendingWelcome` を消し `firstMeetingDone` を立てる）, `movePlush(uid, x, shelfRow): void`, `saveBoard(b: CraneBoardSave | null): void`, `bumpAttempts(): void`, `log(type, extra?): void`, `resetAll(): void`, `grantPlush(defId): void`
   - `SHELF_CAPACITY = 12`
 
 - [ ] **Step 1: 失敗するテストを書く**
@@ -703,10 +703,21 @@ describe("store", () => {
     expect(a.seed).not.toBe(b.seed);
   });
 
-  it("clearPendingWelcomeで演出フラグが消える", () => {
+  it("finishWelcomeで演出フラグが消え、初回完了が記録される", () => {
     store.winPlush("rabbit_01");
-    store.clearPendingWelcome();
+    expect(store.get().firstMeetingDone).toBe(false);
+    store.finishWelcome(false);
     expect(store.get().pendingWelcome).toBeNull();
+    expect(store.get().firstMeetingDone).toBe(true);
+    expect(store.get().log.some((e) => e.type === "welcome_played")).toBe(true);
+  });
+
+  it("firstMeetingDoneは一度立ったら戻らない", () => {
+    store.winPlush("rabbit_01");
+    store.finishWelcome(false);
+    store.winPlush("fox_01");
+    store.finishWelcome(true);
+    expect(store.get().firstMeetingDone).toBe(true);
   });
 
   it("winPlushはlocalStorageへ即座に永続化する", () => {
@@ -813,6 +824,10 @@ git commit -m "feat: ストア・永続化・プレイログ"
 
 ## Task 4: 棚画面（表示のみ）と生活感
 
+**このタスクは Priority 1 に到達するための最小限に絞る。** 重なり解消・収容上限・
+段またぎといった配置ロジックは、実際に必要になる Task 10（ドラッグ配置）へ寄せる。
+出会いの演出を評価するのに必要なのは「2匹が生きているように並んで見えること」だけである。
+
 **Files:**
 - Create: `src/shelf/shelfLayout.ts`, `src/shelf/ShelfScreen.tsx`, `src/render/useAmbientLife.ts`, `src/data/lines.ts`
 - Modify: `src/App.tsx`, `src/styles.css`
@@ -822,9 +837,8 @@ git commit -m "feat: ストア・永続化・プレイログ"
 - Consumes: `useGame`, `OwnedPlush`（Task 3）, `PlushSVG`, `Pose`（Task 2）
 - Produces:
   - `SHELF: { width: 320; rows: 3; rowY: [number, number, number]; padding: number }`
-  - `rowCapacity(row: number): number`
-  - `resolveOverlaps(items: {uid:string; x:number; shelfRow:number; r:number}[]): {uid:string; x:number; shelfRow:number}[]`
   - `clampToShelf(x: number, r: number): number`
+  - `defaultSlot(index: number): { x: number; shelfRow: number }` — 獲得順に空き位置を割り当てる
   - `<ShelfScreen onGoArcade={() => void} />`
   - `LINES: Record<string, string[]>`（`shelfIdle` / `shelfTouch` / `welcomeHost` / `welcomeGuest` / `craneIdle` / `craneAiming` / `craneGrabbed` / `craneMissed` / `craneNearExit` / `craneSuccess`）
 
@@ -834,9 +848,7 @@ git commit -m "feat: ストア・永続化・プレイログ"
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { resolveOverlaps, clampToShelf, SHELF, rowCapacity } from "./shelfLayout";
-
-const item = (uid: string, x: number, shelfRow = 0, r = 32) => ({ uid, x, shelfRow, r });
+import { clampToShelf, defaultSlot, SHELF } from "./shelfLayout";
 
 describe("clampToShelf", () => {
   it("左端をはみ出さない", () => {
@@ -845,43 +857,37 @@ describe("clampToShelf", () => {
   it("右端をはみ出さない", () => {
     expect(clampToShelf(9999, 32)).toBeLessThanOrEqual(SHELF.width - 32);
   });
+  it("内側の値はそのまま", () => {
+    expect(clampToShelf(160, 32)).toBe(160);
+  });
 });
 
-describe("resolveOverlaps", () => {
-  it("重なった2匹を離す", () => {
-    const out = resolveOverlaps([item("a", 100), item("b", 110)]);
-    const [a, b] = out;
-    expect(Math.abs(a.x - b.x)).toBeGreaterThanOrEqual(64 * 0.9);
-  });
-
-  it("解消後も全員が棚の内側にいる", () => {
-    const out = resolveOverlaps([item("a", 100), item("b", 102), item("c", 104), item("d", 106)]);
-    for (const o of out) {
-      expect(o.x).toBeGreaterThanOrEqual(0);
-      expect(o.x).toBeLessThanOrEqual(SHELF.width);
+describe("defaultSlot", () => {
+  it("最初の12匹は互いに重ならない位置を得る", () => {
+    const slots = Array.from({ length: 12 }, (_, i) => defaultSlot(i));
+    for (let i = 0; i < slots.length; i++) {
+      for (let j = i + 1; j < slots.length; j++) {
+        if (slots[i].shelfRow !== slots[j].shelfRow) continue;
+        expect(Math.abs(slots[i].x - slots[j].x), `${i}-${j}`).toBeGreaterThanOrEqual(68);
+      }
     }
   });
 
-  it("1段に入りきらない分は別の段へ移す", () => {
-    const many = Array.from({ length: 6 }, (_, i) => item(`p${i}`, 160, 0, 32));
-    const out = resolveOverlaps(many);
-    expect(new Set(out.map((o) => o.shelfRow)).size).toBeGreaterThan(1);
+  it("全スロットが棚の内側にある", () => {
+    for (let i = 0; i < 12; i++) {
+      const s = defaultSlot(i);
+      expect(s.x).toBeGreaterThanOrEqual(34);
+      expect(s.x).toBeLessThanOrEqual(SHELF.width - 34);
+      expect(s.shelfRow).toBeGreaterThanOrEqual(0);
+      expect(s.shelfRow).toBeLessThan(SHELF.rows);
+    }
   });
 
-  it("重ならない配置はそのまま保つ", () => {
-    const input = [item("a", 60), item("b", 160), item("c", 260)];
-    expect(resolveOverlaps(input).map((o) => o.x)).toEqual([60, 160, 260]);
-  });
-
-  it("uidを失わない", () => {
-    const input = [item("a", 100), item("b", 105), item("c", 110)];
-    expect(new Set(resolveOverlaps(input).map((o) => o.uid))).toEqual(new Set(["a", "b", "c"]));
-  });
-});
-
-describe("rowCapacity", () => {
-  it("1段あたり4匹以上入る", () => {
-    expect(rowCapacity(0)).toBeGreaterThanOrEqual(4);
+  it("2匹目は1匹目の隣に来る（出会いの演出で並んで見えること）", () => {
+    const a = defaultSlot(0);
+    const b = defaultSlot(1);
+    expect(b.shelfRow).toBe(a.shelfRow);
+    expect(Math.abs(b.x - a.x)).toBeLessThan(120);
   });
 });
 ```
@@ -893,7 +899,9 @@ Expected: FAIL — `Failed to resolve import "./shelfLayout"`
 
 - [ ] **Step 3: shelfLayout.ts を書く**
 
-`resolveOverlaps` は同じ `shelfRow` 内で x 昇順に並べ、隣接距離が `ra + rb` 未満なら右へ押し出す。右端に収まらなくなった個体は空きのある段へ移す。全段が埋まっていれば `shelfRow: -1`（箱の中）にはせず、最も空いている段へ最小の重なりで置く（表示上の破綻より、消えないことを優先する）。純粋関数として書き、DOM に触れない。
+純粋関数として書き、DOM に触れない。`defaultSlot(index)` は 1 段 4 匹 × 3 段のスロットを
+獲得順に割り当てる（`x = 40 + (index % 4) * 80`, `shelfRow = floor(index / 4)`）。
+2匹目が1匹目の隣に来ることが、出会いの演出の前提になる。
 
 - [ ] **Step 4: lines.ts を書く**
 
@@ -935,11 +943,14 @@ export function useAmbientLife(refs: Map<string, SVGGElement | null>, plushes: {
 - ヘッダに所持数（「おともだち 2」程度。バッジや「/10」のような収集率表示にしない）
 - 「ゲームセンターへ」ボタン、「棚をシェア」ボタン（Task 11 まではダミー）
 - 表示時に `shelf_view` を、離脱時に `shelf_dwell`（meta.ms）をログ
+- **一時的な開発用ボタン「（開発用）新しい子を迎える」を画面下に置く**。押すと
+  `store.winPlush("rabbit_01")` を呼ぶ。Task 5 の演出をコンソールではなく実際の操作として
+  評価するために必要。Task 8 でクレーンが繋がったら削除する
 
 - [ ] **Step 7: テストを実行して通ることを確認する**
 
 Run: `npm test`
-Expected: PASS — shelfLayout 7件
+Expected: PASS — shelfLayout 6件
 
 - [ ] **Step 8: 目視確認**
 
@@ -971,7 +982,10 @@ git commit -m "feat: 棚画面と生活感アニメーション"
   - `type CeremonyPhase = { t: number; hostLine?: string; guestLine?: string; caption?: string; hostLook: number; guestHop: number; sparkle: boolean }`
   - `ceremonyDuration(isFirstMeeting: boolean): number`
   - `ceremonyAt(ms: number, isFirstMeeting: boolean): CeremonyPhase`
-  - `<MeetingCeremony guestUid={string} onDone={() => void} />`
+  - `<MeetingCeremony guestUid={string} isFirstMeeting={boolean} onDone={(skipped: boolean) => void} />`
+
+`isFirstMeeting` は**所持数から推測しない**（リロードや DevMenu の付与でずれるため）。
+`store.get().firstMeetingDone === false` を親が読んで props で渡す。
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -1055,12 +1069,14 @@ Expected: FAIL — `Failed to resolve import "./ceremonyTimeline"`
 - 先輩役は新入りの最近傍1匹。同じ子が続けて選ばれたら `welcomeHost` の別のセリフを使う
 - **画面のどこをタップしてもスキップ**し、即座に最終状態へ遷移する
 - 再生中は配置ドラッグを無効化する
-- 終了時に `store.clearPendingWelcome()` を呼び、`welcome_played`（meta: `{ count, skipped }`）をログ
+- 終了時に `store.finishWelcome(skipped)` を呼ぶ。これが `pendingWelcome` のクリアと
+  `firstMeetingDone` の設定、`welcome_played`（meta: `{ count, skipped }`）のログを**1回の更新で**行う
 - 背景をわずかに落とすが、暗転させない
 
 - [ ] **Step 5: ShelfScreen に組み込む**
 
-`store.get().pendingWelcome` が非 null なら `MeetingCeremony` を表示する。所持数が2匹目のときだけ `isFirstMeeting = true`。
+`store.get().pendingWelcome` が非 null なら `MeetingCeremony` を表示し、
+`isFirstMeeting={!store.get().firstMeetingDone}` を渡す。
 
 - [ ] **Step 6: テストを実行して通ることを確認する**
 
@@ -1069,12 +1085,8 @@ Expected: PASS — ceremony 11件
 
 - [ ] **Step 7: 目視確認（このMVPで最も重要な確認）**
 
-DevMenu がまだ無いので、ブラウザのコンソールから次を実行して演出を起こす。
-
-```js
-// dev用に window.__store = store を store.ts で公開しておく
-__store.winPlush("rabbit_01")
-```
+Task 4 で置いた「（開発用）新しい子を迎える」ボタンを押して演出を起こす。
+コンソールではなく画面の操作として起こすこと。押した瞬間の体験を見たいからである。
 
 確認すること。
 - **2匹が並んだ瞬間に嬉しさがあるか**
@@ -1097,7 +1109,7 @@ git commit -m "feat: 出会いの演出 (Priority 1)"
 
 - [ ] **Codex に Phase B をレビューさせる**
 
-> src/shelf/ をレビューしてほしい。ぬいぐるみクレーンゲームMVPの「棚」と「出会いの演出」。仕様書は docs/superpowers/specs/2026-09-03-plush-crane-mvp-design.md の 8章・9章・6.1。見てほしい点: (1) resolveOverlaps が全段満杯や同座標多重などの境界で無限ループや個体消失を起こさないか (2) useAmbientLife の rAF がアンマウント時やタブ非表示で確実に止まるか、リークがないか (3) MeetingCeremony のスキップとリロードが競合したとき pendingWelcome が残留・二重再生しないか (4) 演出中にドラッグやナビゲーションが漏れて入らないか
+> src/shelf/ をレビューしてほしい。ぬいぐるみクレーンゲームMVPの「棚」と「出会いの演出」。仕様書は docs/superpowers/specs/2026-09-03-plush-crane-mvp-design.md の 8章・9章・6.1。見てほしい点: (1) useAmbientLife の rAF がアンマウント時やタブ非表示で確実に止まるか、リークがないか (2) MeetingCeremony のスキップとリロードが競合したとき pendingWelcome が残留・二重再生しないか、finishWelcome が二重に呼ばれないか (3) 演出中にドラッグやナビゲーションが漏れて入らないか (4) ceremonyAt が純粋関数として正しく、タイムラインの境界時刻で状態が飛ばないか (5) defaultSlot の割当が2匹目を1匹目の隣に置けているか
 
 ---
 
@@ -1282,12 +1294,20 @@ git commit -m "feat: 球体物理ソルバ"
   - `initialHold(d: number, def: PlushDef, n: number): number`
   - `willHold(d: number, def: PlushDef, n: number): boolean`
   - `maxAimError(def: PlushDef, n: number): number`
-  - `advanceImpulse(b: Body, pit: Pit): { vx: number; vz: number }`
-  - `enforceAdvance(before: number, after: Body, pit: Pit): void`
-  - `type Crane = { state: CraneState; armX: number; armZ: number; armY: number; hold: number; heldId: string | null; attemptsOnBoard: number; liftElapsed: number }`
+  - `advanceImpulse(b: Body, pit: Pit, need: number): void`
+  - `advanceGoal(before: number): number` — `Math.max(0, before - MIN_ADVANCE)`
+  - `satisfiesAdvance(b: Body, pit: Pit, before: number): boolean`
+  - `placeTowardExit(target: Body, others: Body[], pit: Pit, goal: number): "placed" | "acquired"`
+  - `MAX_ADVANCE_RETRIES = 3`
+  - `type Crane = { state: CraneState; armX: number; armZ: number; armY: number; hold: number; hold0: number; heldId: string | null; attemptsOnBoard: number; liftElapsed: number; targetId: string | null; advanceBefore: number; advanceRetries: number }`
   - `createCrane(): Crane`
+  - `startDrop(c: Crane, bodies: Body[], pit: Pit): void` — **`attemptsOnBoard` を増やす唯一の場所**
   - `tickCrane(c: Crane, bodies: Body[], pit: Pit, dt: number): CraneEvent[]`
   - `type CraneEvent = { kind: "drop" | "grabbed" | "released" | "won" | "nudged" | "settled"; bodyId?: string }`
+
+**`tickCrane` は `step` を呼ばない。** 呼び出し側が同じループで `step(bodies, pit, dt)` と
+`tickCrane(c, bodies, pit, dt)` の両方を回す。この責務分離をコード内のコメントに明記すること。
+テストも本番の `ArcadeScreen` も同じループ構造にする。
 
 - [ ] **Step 1: 難易度の失敗するテストを書く**
 
@@ -1296,7 +1316,7 @@ git commit -m "feat: 球体物理ソルバ"
 ```ts
 import { describe, it, expect } from "vitest";
 import { grabRadius, drain, requiredHold, initialHold, willHold, maxAimError,
-         R0, DRAIN0, RELEASE_THRESHOLD, MIN_ADVANCE, AUTO_DROP_RANGE } from "./craneMachine";
+         R0, DRAIN0 } from "./craneMachine";
 import { PLUSHIES, getPlush, plushCoefficient } from "../data/plushies";
 
 /** レイリー分布に従う照準誤差 d を生成する（仕様7.6）。 */
@@ -1337,9 +1357,6 @@ describe("アシスト表 (仕様7.6)", () => {
   it("5回目以降は4回目と同じ（上限で頭打ち）", () => {
     expect(grabRadius(9)).toBe(grabRadius(4));
     expect(drain(9)).toBe(drain(4));
-  });
-  it("必要hold0 = RELEASE_THRESHOLD + drain(n)", () => {
-    for (let n = 1; n <= 4; n++) expect(requiredHold(n)).toBeCloseTo(RELEASE_THRESHOLD + drain(n), 6);
   });
   it("R0とDRAIN0が仕様値", () => {
     expect(R0).toBe(44);
@@ -1392,9 +1409,26 @@ describe("maxAimError (仕様7.6の表)", () => {
       }
     }
   });
+
+  // maxAimError は willHold の境界そのものでなければ意味がない。
+  // 式の写経ではなく、境界の内外で willHold が反転することを確かめる。
+  it("境界の内側では掴め、外側では掴めない", () => {
+    const EPS = 0.5;
+    for (const p of PLUSHIES) {
+      for (let n = 1; n <= 4; n++) {
+        const m = maxAimError(p, n);
+        if (m <= EPS) continue;                       // n=1 で取れない個体は対象外
+        expect(willHold(m - EPS, p, n), `${p.id} n=${n} 内側`).toBe(true);
+        expect(willHold(m + EPS, p, n), `${p.id} n=${n} 外側`).toBe(false);
+      }
+    }
+  });
 });
 
-describe("成功率シミュレーション (仕様7.8)", () => {
+// これは「解析的キャリブレーション」であって獲得シミュレーションではない。
+// willHold の閾値と照準分布の組み合わせが狙った当たり率になるかだけを見る。
+// 実際に won が出るかは craneMachine.test.ts の端から端までのシミュレーションで検証する。
+describe("照準分布キャリブレーション (仕様7.6の表の裏取り)", () => {
   function simulate(sigma: number, trials: number) {
     const rnd = mulberry32(20260903);
     const rabbit = getPlush("rabbit_01");
@@ -1483,76 +1517,180 @@ Expected: PASS — 全件
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { createCrane, tickCrane, MIN_ADVANCE, AUTO_DROP_RANGE } from "./craneMachine";
-import { DEFAULT_PIT, STEP, exitDistance, atRest, type Body } from "./physics";
+import { createCrane, startDrop, tickCrane, advanceGoal,
+         MIN_ADVANCE, AUTO_DROP_RANGE, type Crane, type CraneEvent } from "./craneMachine";
+import { step, DEFAULT_PIT, STEP, exitDistance, atRest, type Body } from "./physics";
+import { getPlush } from "../data/plushies";
 
 const prize = (x: number, z: number, id = "p1"): Body => ({
-  id, defId: "rabbit_01", x, z, y: 0, vx: 0, vy: 0, vz: 0, r: 33, spin: 0, held: false,
+  id, defId: "rabbit_01", x, z, y: 0, vx: 0, vy: 0, vz: 0,
+  r: getPlush("rabbit_01").size, spin: 0, held: false,
 });
 
-/** アームを (ax, az) に置いて1回DROPし、盤面が静止するまで進める。 */
-function runAttempt(c: ReturnType<typeof createCrane>, bodies: Body[], ax: number, az: number) {
-  c.armX = ax; c.armZ = az; c.state = "descend"; c.attemptsOnBoard++;
-  const events = [];
-  for (let i = 0; i < 120 * 12; i++) {
+/**
+ * アームを (ax, az) に置いて1回 DROP し、静止して idle に戻るまで進める。
+ * 本番の ArcadeScreen と同じく step と tickCrane の両方を毎ステップ回す。
+ * 完走できなければ例外を投げる（黙って通過させない）。
+ */
+function runAttempt(c: Crane, bodies: Body[], ax: number, az: number): CraneEvent[] {
+  c.armX = ax;
+  c.armZ = az;
+  startDrop(c, bodies, DEFAULT_PIT);          // attemptsOnBoard を増やす唯一の経路
+  const events: CraneEvent[] = [];
+  const LIMIT = 120 * 20;
+  for (let i = 0; i < LIMIT; i++) {
+    step(bodies, DEFAULT_PIT, STEP);
     events.push(...tickCrane(c, bodies, DEFAULT_PIT, STEP));
-    if (c.state === "idle" && atRest(bodies)) break;
+    if (c.state === "idle" && atRest(bodies)) return events;
   }
-  return events;
+  throw new Error(`runAttempt が完走しなかった: state=${c.state} atRest=${atRest(bodies)}`);
 }
 
-describe("盤面前進の保証 (仕様7.7)", () => {
-  it("掴んで落とした後、出口距離が必ず MIN_ADVANCE 以上縮む", () => {
+/** 対象景品を id で探す。獲得済みなら undefined。 */
+const find = (bodies: Body[], id: string) => bodies.find((b) => b.id === id);
+
+describe("不変条件: 試行後は獲得済みか、出口距離が MIN_ADVANCE 以上縮む (仕様7.7)", () => {
+  it("掴んで落とした場合", () => {
     for (let trial = 0; trial < 20; trial++) {
       const b = [prize(200 + trial * 3, 120)];
       const before = exitDistance(b[0], DEFAULT_PIT);
-      const c = createCrane();
-      runAttempt(c, b, b[0].x, b[0].z);
-      if (b.length === 0) continue;           // 獲得した場合は対象外
-      const after = exitDistance(b[0], DEFAULT_PIT);
-      expect(before - after, `trial ${trial}`).toBeGreaterThanOrEqual(MIN_ADVANCE - 0.5);
+      const evs = runAttempt(createCrane(), b, b[0].x, b[0].z);
+      const t = find(b, "p1");
+      if (!t) {
+        expect(evs.some((e) => e.kind === "won"), `trial ${trial} 消えたのにwonが無い`).toBe(true);
+        continue;
+      }
+      expect(exitDistance(t, DEFAULT_PIT), `trial ${trial}`)
+        .toBeLessThanOrEqual(advanceGoal(before) + 0.5);
     }
   });
 
-  it("狙いを完全に外しても最近傍の景品が動く（何も起きないの禁止）", () => {
+  it("完全に空振りした場合も同じ不変条件を満たす（何も起きないの禁止）", () => {
     const b = [prize(280, 150)];
-    const before = { x: b[0].x, z: b[0].z };
-    const c = createCrane();
-    runAttempt(c, b, 20, 20);
-    expect(b[0].x !== before.x || b[0].z !== before.z).toBe(true);
+    const before = exitDistance(b[0], DEFAULT_PIT);
+    runAttempt(createCrane(), b, 20, 20);
+    const t = find(b, "p1");
+    expect(t).toBeDefined();
+    expect(exitDistance(t!, DEFAULT_PIT)).toBeLessThanOrEqual(advanceGoal(before) + 0.5);
+    expect(Number.isFinite(t!.x) && Number.isFinite(t!.z)).toBe(true);
   });
 
-  it("他の景品に阻まれても出口距離は縮む", () => {
-    const b = [prize(200, 120, "p1"), prize(150, 90, "block")];
+  it("他の景品に真正面から阻まれても満たす", () => {
+    const b = [prize(200, 120, "p1"), prize(160, 96, "block")];
     const before = exitDistance(b[0], DEFAULT_PIT);
-    const c = createCrane();
-    runAttempt(c, b, 200, 120);
-    const target = b.find((x) => x.id === "p1");
-    if (!target) return;
-    expect(before - exitDistance(target, DEFAULT_PIT)).toBeGreaterThanOrEqual(MIN_ADVANCE - 0.5);
+    const evs = runAttempt(createCrane(), b, 200, 120);
+    const t = find(b, "p1");
+    if (!t) {
+      expect(evs.some((e) => e.kind === "won")).toBe(true);
+      return;
+    }
+    expect(exitDistance(t, DEFAULT_PIT)).toBeLessThanOrEqual(advanceGoal(before) + 0.5);
+  });
+
+  it("壁際でも満たす", () => {
+    const b = [prize(DEFAULT_PIT.maxX - 34, DEFAULT_PIT.maxZ - 34, "p1")];
+    const before = exitDistance(b[0], DEFAULT_PIT);
+    runAttempt(createCrane(), b, b[0].x, b[0].z);
+    const t = find(b, "p1");
+    if (t) expect(exitDistance(t, DEFAULT_PIT)).toBeLessThanOrEqual(advanceGoal(before) + 0.5);
+  });
+
+  it("既に出口の真上にある景品は獲得として扱う（方向ベクトル零で保証が壊れない）", () => {
+    const b = [prize(DEFAULT_PIT.exit.x, DEFAULT_PIT.exit.z, "p1")];
+    const evs = runAttempt(createCrane(), b, 9999, 9999);
+    expect(find(b, "p1")).toBeUndefined();
+    expect(evs.filter((e) => e.kind === "won")).toHaveLength(1);
+  });
+
+  it("解決後も景品同士が重ならず、盤面の内側にいる", () => {
+    const b = [prize(180, 110, "p1"), prize(150, 90, "b1"), prize(210, 130, "b2")];
+    runAttempt(createCrane(), b, 180, 110);
+    for (let i = 0; i < b.length; i++) {
+      expect(b[i].x).toBeGreaterThanOrEqual(DEFAULT_PIT.minX - 0.5);
+      expect(b[i].x).toBeLessThanOrEqual(DEFAULT_PIT.maxX + 0.5);
+      for (let j = i + 1; j < b.length; j++) {
+        const gap = Math.hypot(b[i].x - b[j].x, b[i].z - b[j].z);
+        expect(gap, `${b[i].id}-${b[j].id}`).toBeGreaterThan((b[i].r + b[j].r) * 0.85);
+      }
+    }
   });
 });
 
 describe("4回以内の構造的保証 (仕様7.7)", () => {
-  it("狙いを毎回外しても4回以内に必ず獲得する", () => {
-    const b = [prize(DEFAULT_PIT.exit.x + 140, DEFAULT_PIT.exit.z)];  // D0 = 140px
+  it("狙いを毎回外しても、毎試行 MIN_ADVANCE 縮み、4回以内に獲得する", () => {
+    const b = [prize(DEFAULT_PIT.exit.x + 140, DEFAULT_PIT.exit.z)];  // D0 = 上限の140px
     const c = createCrane();
     let won = false;
     for (let n = 1; n <= 4 && !won; n++) {
+      const before = exitDistance(b[0], DEFAULT_PIT);
       const evs = runAttempt(c, b, 9999, 9999);   // 常に完全に外す
-      won = evs.some((e) => e.kind === "won") || b.length === 0;
+      const t = find(b, "p1");
+      if (!t) {
+        expect(evs.filter((e) => e.kind === "won"), `n=${n}`).toHaveLength(1);
+        won = true;
+        break;
+      }
+      expect(exitDistance(t, DEFAULT_PIT), `n=${n} で前進していない`)
+        .toBeLessThanOrEqual(advanceGoal(before) + 0.5);
     }
-    expect(won).toBe(true);
+    expect(won, "4回外し続けても獲得できなかった").toBe(true);
   });
 
-  it("D0の上限140pxで、3回失敗後は必ずAUTO_DROP_RANGE圏内に入る", () => {
+  it("3回失敗した時点でAUTO_DROP_RANGE圏内に入る", () => {
     const b = [prize(DEFAULT_PIT.exit.x + 140, DEFAULT_PIT.exit.z)];
     const c = createCrane();
-    for (let n = 1; n <= 3; n++) {
-      if (b.length === 0) break;
-      runAttempt(c, b, 9999, 9999);
-    }
+    for (let n = 1; n <= 3 && b.length > 0; n++) runAttempt(c, b, 9999, 9999);
     if (b.length > 0) expect(exitDistance(b[0], DEFAULT_PIT)).toBeLessThanOrEqual(AUTO_DROP_RANGE);
+  });
+});
+
+describe("端から端までの獲得シミュレーション (仕様7.8)", () => {
+  function mulberry32(seed: number) {
+    let a = seed;
+    return () => {
+      a |= 0; a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function gauss(rnd: () => number) {
+    return Math.sqrt(-2 * Math.log(Math.max(1e-9, rnd()))) * Math.cos(2 * Math.PI * rnd());
+  }
+
+  /** 実際に crane を駆動し、won イベントが出た試行数を数える。 */
+  function play(sigma: number, sessions: number) {
+    const rnd = mulberry32(20260903);
+    let firstTry = 0, within4 = 0;
+    for (let s = 0; s < sessions; s++) {
+      const b = [prize(DEFAULT_PIT.exit.x + 120, DEFAULT_PIT.exit.z + 20)];
+      const c = createCrane();
+      for (let n = 1; n <= 4; n++) {
+        const target = b[0];
+        if (!target) break;
+        const evs = runAttempt(c, b, target.x + gauss(rnd) * sigma, target.z + gauss(rnd) * sigma);
+        if (evs.some((e) => e.kind === "won")) {
+          if (n === 1) firstTry++;
+          within4++;
+          break;
+        }
+      }
+    }
+    return { firstTry: firstTry / sessions, within4: within4 / sessions };
+  }
+
+  it("初見(σ=18px): 4回以内獲得率 >= 0.95", () => {
+    expect(play(18, 200).within4).toBeGreaterThanOrEqual(0.95);
+  });
+
+  it("初見(σ=18px): 1回目獲得率が 0.10〜0.55 に収まる（下手すぎず簡単すぎず）", () => {
+    const r = play(18, 200);
+    expect(r.firstTry).toBeGreaterThanOrEqual(0.10);
+    expect(r.firstTry).toBeLessThanOrEqual(0.55);
+  });
+
+  it("上手いプレイヤー(σ=9px)のほうが1回目獲得率が高い", () => {
+    expect(play(9, 200).firstTry).toBeGreaterThan(play(18, 200).firstTry);
   });
 });
 
@@ -1564,18 +1702,43 @@ describe("状態機械", () => {
     expect(c.state).toBe("idle");
   });
 
-  it("試行カウンタは結果に関わらず増える", () => {
+  it("試行カウンタは結果に関わらず1回だけ増える", () => {
     const b = [prize(280, 150)];
     const c = createCrane();
     runAttempt(c, b, 9999, 9999);
     expect(c.attemptsOnBoard).toBe(1);
+    runAttempt(c, b, 280, 150);
+    expect(c.attemptsOnBoard).toBe(2);
   });
 
   it("獲得時に won イベントを1回だけ出す", () => {
-    const b = [prize(DEFAULT_PIT.exit.x + 10, DEFAULT_PIT.exit.z)];
+    const b = [prize(DEFAULT_PIT.exit.x + 90, DEFAULT_PIT.exit.z)];
     const c = createCrane();
-    const evs = runAttempt(c, b, b[0].x, b[0].z);
+    let evs: CraneEvent[] = [];
+    for (let n = 1; n <= 4 && b.length > 0; n++) evs = evs.concat(runAttempt(c, b, 9999, 9999));
     expect(evs.filter((e) => e.kind === "won")).toHaveLength(1);
+  });
+
+  it("盤面が空でもクラッシュしない", () => {
+    const b: Body[] = [];
+    const c = createCrane();
+    expect(() => runAttempt(c, b, 100, 100)).not.toThrow();
+  });
+
+  it("掴んだ景品が途中で盤面から消えても heldId 参照で壊れない", () => {
+    const b = [prize(200, 120)];
+    const c = createCrane();
+    c.armX = 200; c.armZ = 120;
+    startDrop(c, b, DEFAULT_PIT);
+    for (let i = 0; i < 300; i++) {
+      step(b, DEFAULT_PIT, STEP);
+      tickCrane(c, b, DEFAULT_PIT, STEP);
+      if (c.heldId) { b.length = 0; break; }        // 掴んだ瞬間に消す
+    }
+    expect(() => {
+      for (let i = 0; i < 600; i++) { step(b, DEFAULT_PIT, STEP); tickCrane(c, b, DEFAULT_PIT, STEP); }
+    }).not.toThrow();
+    expect(c.state).toBe("idle");
   });
 });
 ```
@@ -1589,34 +1752,81 @@ Expected: FAIL — `createCrane is not a function`
 
 状態遷移: `idle → aimX → aimZ → descend → grab → lift → carry → release → settle → idle`
 
-- `descend` 開始時に `attemptsOnBoard++`、`drop` イベント
-- `grab`: 最近傍 body との x-z 距離 `d` から `initialHold(d, def, n)` を求める。`hold > 0` なら `held = true` にして `grabbed` イベント。`hold === 0`（掴めなかった）なら最近傍 body に小さなインパルスを与えて `nudged` イベント（「何も起きない」の禁止）
-- `lift`: `liftElapsed += dt`、`hold = hold0 - drain(n) * (liftElapsed / T_LIFT)`。`hold < RELEASE_THRESHOLD` で `held = false` にし `released` イベント → `advanceImpulse` を適用
-- `carry`: `liftElapsed >= T_LIFT` まで保持できたらアームを出口上空へ移動し、`release` で離す → `won`
-- `release`/`settle`: `atRest` になるまで待ち、`enforceAdvance` を適用してから `idle` へ
-
-**`enforceAdvance` が仕様7.7の保証を実装する中核である。**
+**`startDrop` が試行開始の唯一の入口。** ここでしか `attemptsOnBoard` を増やさない。
 
 ```ts
-/** 落下前の出口距離を記録し、静止後に MIN_ADVANCE 未満しか縮んでいなければ差分を転がりで補う。 */
-export function enforceAdvance(before: number, b: Body, pit: Pit): void {
-  const after = exitDistance(b, pit);
-  const gained = before - after;
-  if (gained >= MIN_ADVANCE) return;
-  const need = MIN_ADVANCE - gained;
-  const dx = pit.exit.x - b.x;
-  const dz = pit.exit.z - b.z;
-  const len = Math.hypot(dx, dz) || 1;
-  // 位置を直接動かすのではなく、転がる速度として与える。見た目が「ころころ」になる。
-  const speed = Math.sqrt(2 * need * ROLL_DECEL);
-  b.vx = (dx / len) * speed;
-  b.vz = (dz / len) * speed;
+export function startDrop(c: Crane, bodies: Body[], pit: Pit): void {
+  c.attemptsOnBoard++;
+  c.liftElapsed = 0;
+  c.advanceRetries = 0;
+  // 掴めるかどうかに関わらず「対象」を決める。空振りでもこの子が動く。
+  const target = nearestBody(bodies, c.armX, c.armZ);
+  c.targetId = target?.id ?? null;
+  c.advanceBefore = target ? exitDistance(target, pit) : 0;
+  c.state = "descend";
 }
 ```
 
-`ROLL_DECEL` は床摩擦から導かれる減速度。`enforceAdvance` の後は再び静止するまで `settle` を続け、必要なら再適用する（最大3回で打ち切り、それでも足りなければ位置を直接補正する）。
+- `grab`: 対象との x-z 距離 `d` から `hold0 = initialHold(d, def, n)`。`hold0 > 0` なら `held = true` にして `grabbed` イベント。`hold0 === 0` なら対象に小さなインパルスを与えて `nudged` イベント → `settle` へ
+- `lift`: `liftElapsed += dt`、`hold = hold0 - drain(n) * (liftElapsed / T_LIFT)`。`hold < RELEASE_THRESHOLD` で `held = false` にし `released` → `advanceImpulse` → `settle`
+- `carry`: `liftElapsed >= T_LIFT` まで保持できたらアームを出口上空へ運び、`release` で離す → 物理が出口判定して `won`
+- `settle`: 下記の不変条件ループ
 
-`advanceImpulse` は落下時に 25〜70px 相当の初速を出口方向へ与える。`AUTO_DROP_RANGE`(60px) 圏内の body はアームが触れただけで出口へ転がるよう、`nudged` 時の力を距離に応じて強める。
+**不変条件ループが仕様7.7の保証を実装する中核である。** 「インパルスを与えたから縮んだはず」と推測してはならない。**静止するたびに実測し、満たすまで機械が責任を持つ。**
+
+```ts
+export const MAX_ADVANCE_RETRIES = 3;
+
+export const advanceGoal = (before: number) => Math.max(0, before - MIN_ADVANCE);
+
+export function satisfiesAdvance(b: Body, pit: Pit, before: number): boolean {
+  return exitDistance(b, pit) <= advanceGoal(before) + 1e-6;
+}
+```
+
+`settle` の毎ステップ:
+
+1. `atRest(bodies)` でなければ何もしない（物理の進行を待つ）
+2. `targetId` の body が盤面に無い → 獲得済み。`idle` へ
+3. `satisfiesAdvance` を満たす → `settled` イベント。`idle` へ
+4. `exitDistance(target) <= pit.exit.r` → 出口の内側。獲得として扱い `won` を出して除去。`idle` へ
+   （**対象が出口の真上にいて方向ベクトルが零になる場合をここで吸収する**）
+5. `advanceRetries < MAX_ADVANCE_RETRIES` → `advanceRetries++` し、
+   不足分 `need = exitDistance(target) - advanceGoal(before)` に応じた
+   `advanceImpulse(target, pit, need)` を与えて 1 に戻る（次の静止まで待つ）
+6. 再試行を使い切った → `placeTowardExit` で**決定論的に決着させる**。`idle` へ
+
+```ts
+/**
+ * 対象を出口方向の直線上、exitDistance が goal ちょうどになる点へ直接置く。
+ * 重なりは対象ではなく「他の景品」を押しのけて解消する（保証済みの位置を壊さないため）。
+ * goal が出口領域の内側なら配置せず獲得として扱う。
+ * 有限回で必ず終わり、必ず不変条件を満たす。
+ */
+export function placeTowardExit(
+  target: Body, others: Body[], pit: Pit, goal: number
+): "placed" | "acquired" {
+  if (goal <= pit.exit.r) return "acquired";
+  const dx = pit.exit.x - target.x;
+  const dz = pit.exit.z - target.z;
+  const len = Math.hypot(dx, dz);
+  if (len <= 1e-6) return "acquired";          // 既に出口上
+  target.x = pit.exit.x - (dx / len) * goal;
+  target.z = pit.exit.z - (dz / len) * goal;
+  target.vx = 0; target.vz = 0;
+  pushOthersAway(target, others, pit);          // 他方だけを動かす
+  return "placed";
+}
+```
+
+`pushOthersAway` は対象と重なる他の body を法線方向へ押し出し、壁内へクランプする。押し出された body が別の body と重なる場合は最大 8 回反復して収束させる（対象は固定したまま）。
+
+`advanceImpulse(b, pit, need)` は床摩擦から導かれる減速度 `ROLL_DECEL` を使い `v = sqrt(2 * need * ROLL_DECEL) * 1.35` の初速を出口方向へ与える。1.35 は阻害による損失を見込んだ余裕。`AUTO_DROP_RANGE`(60px) 圏内の body には、アームが触れただけで出口へ転がり切るよう十分な初速を与える。
+
+**この設計の要点**: 手順 1-5 は「気持ちよく転がって縮む」通常経路で、ほぼ常にここで決着する。
+手順 6 は見た目が硬いが、**理不尽な行き詰まりが絶対に起きないことを保証する最後の砦**である。
+実プレイで手順 6 が頻繁に発動するようなら、それは `advanceImpulse` の初速か盤面配置の問題なので、
+6 を消すのではなく 1-5 を調整すること。
 
 - [ ] **Step 8: テストを実行して通ることを確認する**
 
@@ -1643,8 +1853,14 @@ git commit -m "feat: クレーン状態機械と難易度保証"
 - Consumes: `physics.ts`, `craneMachine.ts`, `PlushSVG`, `store`
 - Produces:
   - `project(x, y, z): { sx: number; sy: number; scale: number }`
+  - `restoreBoard(save: CraneBoardSave): Body[]` — `id` は `${defId}#${index}` で再生成、`r` は `getPlush(defId).size`、`y`/速度/`spin` は 0、`held` は false
+  - `boardToSave(bodies: Body[], attemptsOnBoard: number): CraneBoardSave` — `atRest` のときだけ呼ぶ
+  - `makeBoard(): Body[]` — 新規盤面。主景品 Rabbit を出口から 90〜140px に置く
   - `<CraneView bodies={Body[]} crane={Crane} pit={Pit} debug={boolean} />`
   - `<ArcadeScreen onGoShelf={() => void} />`
+
+`CraneBoardSave`（`{defId, x, z}`）と `Body`（`id/y/速度/r/spin/held` を持つ）の橋渡しは
+この 2 関数に閉じ込める。他の場所で `Body` を手組みしない。
 
 - [ ] **Step 1: 投影と盤面描画を書く**
 
@@ -1667,8 +1883,9 @@ export function project(x: number, y: number, z: number) {
 - `1/120` 固定ステップ、1フレーム最大8ステップ
 - 操作 UI: 状態に応じて「← →」「奥 手前」「これでいく」の3ボタン。長押しで移動、離すと止まる。`aimZ` の決定で自動 DROP
 - 画面上部に操作説明を1行（「長押しで動かして、はなすと止まるよ」）
-- 盤面初期化: 主景品 Rabbit を出口から 90〜140px（仕様7.7）に置く。他4個をランダム配置。`store.get().craneBoard` があれば復元し、無ければ生成
-- `atRest` かつ `state === "idle"` のときだけ `store.saveBoard()` する（仕様5.3）
+- 盤面初期化: `store.get().craneBoard` があれば `restoreBoard` で復元し、無ければ `makeBoard()` を生成
+- `atRest` かつ `state === "idle"` のときだけ `store.saveBoard(boardToSave(bodies, crane.attemptsOnBoard))` する（仕様5.3）
+- 獲得後は盤面を補充し、`attemptsOnBoard` を 0 に戻す（仕様7.4）
 - `won` イベントで `store.winPlush(defId)` を呼び、少し待ってから棚へ遷移する
 - ログ: `arcade_enter` / `crane_start` / `crane_drop` / `plush_grabbed` / `plush_dropped` / `plush_moved` / `plush_won` / `shelf_return`。`crane_drop` の meta に照準誤差 `d` を入れる（仕様7.6の σ 較正に使う）
 
@@ -1810,7 +2027,7 @@ git commit -m "feat: 見守りぬいぐるみ"
 
 - [ ] **Codex に Phase C をレビューさせる**
 
-> src/arcade/ をレビューしてほしい。ぬいぐるみクレーンゲームMVPのクレーン部分。仕様書は docs/superpowers/specs/2026-09-03-plush-crane-mvp-design.md の 7章。見てほしい点: (1) physics.step が多体重なり・高速度・0除算で発散またはNaNを出さないか (2) enforceAdvance が無限ループや振動を起こさないか、MIN_ADVANCE の保証が本当に成立しているか (3) craneMachine の状態機械が詰まる経路（idleに戻らない）がないか、body が途中で消えた場合の heldId 参照 (4) ArcadeScreen の rAF がアンマウント・タブ非表示で止まるか、物理ループがReact再レンダーを毎ステップ起こしていないか (5) difficulty.test.ts のシミュレーションが実装の性質を本当に検証しているか、トートロジーになっていないか
+> src/arcade/ をレビューしてほしい。ぬいぐるみクレーンゲームMVPのクレーン部分。仕様書は docs/superpowers/specs/2026-09-03-plush-crane-mvp-design.md の 7章。見てほしい点: (1) physics.step が多体重なり・高速度・0除算で発散またはNaNを出さないか (2) settle の不変条件ループ（再試行3回→placeTowardExit）が本当に有限回で終わり、必ず exitDistance <= max(0, before-30) を満たすか。placeTowardExit の pushOthersAway が対象を動かしてしまう経路や、他の景品を盤外や出口へ押し込む経路はないか (3) craneMachine の状態機械が詰まる経路（idleに戻らない）がないか、body が途中で消えた場合の heldId/targetId 参照 (4) ArcadeScreen の rAF がアンマウント・タブ非表示で止まるか、物理ループがReact再レンダーを毎ステップ起こしていないか (5) craneMachine.test.ts の端から端までのシミュレーションが実装の写経になっていないか、runAttempt の完走チェックが機能しているか (6) startDrop 以外に attemptsOnBoard を触る経路が無いか
 
 ---
 
@@ -1825,14 +2042,71 @@ git commit -m "feat: 見守りぬいぐるみ"
 
 **Interfaces:**
 - Consumes: `shelfLayout.ts`, `store.movePlush`
-- Produces: `useDragPlacement(opts): { onPointerDown(uid, e): void; draggingUid: string | null; ghost: {x, row} | null }`
+- Produces:
+  - `rowFromY(y: number): number`
+  - `rowCapacity(row: number): number`
+  - `resolveOverlaps(items: {uid:string; x:number; shelfRow:number; r:number}[]): {uid:string; x:number; shelfRow:number}[]`
+  - `snapPlacement(uid, x, row, r, others): { x: number; shelfRow: number; reverted: boolean }`
+  - `useDragPlacement(opts): { onPointerDown(uid, e): void; draggingUid: string | null; ghost: {x, row} | null }`
+
+重なり解消と収容上限のロジックは Task 4 からここへ移した。実際に必要になるのはここだからである。
 
 - [ ] **Step 1: 失敗するテストを追記する**
 
 `src/shelf/shelfLayout.test.ts` に追記:
 
 ```ts
-import { rowFromY, snapPlacement } from "./shelfLayout";
+import { rowFromY, snapPlacement, resolveOverlaps, rowCapacity } from "./shelfLayout";
+
+const item = (uid: string, x: number, shelfRow = 0, r = 32) => ({ uid, x, shelfRow, r });
+
+describe("resolveOverlaps", () => {
+  it("重なった2匹を離す", () => {
+    const [a, b] = resolveOverlaps([item("a", 100), item("b", 110)]);
+    expect(Math.abs(a.x - b.x)).toBeGreaterThanOrEqual(64 * 0.9);
+  });
+
+  it("解消後も全員が棚の内側にいる", () => {
+    const out = resolveOverlaps([item("a", 100), item("b", 102), item("c", 104), item("d", 106)]);
+    for (const o of out) {
+      expect(o.x).toBeGreaterThanOrEqual(0);
+      expect(o.x).toBeLessThanOrEqual(SHELF.width);
+    }
+  });
+
+  it("1段に入りきらない分は別の段へ移す", () => {
+    const many = Array.from({ length: 6 }, (_, i) => item(`p${i}`, 160, 0, 32));
+    expect(new Set(resolveOverlaps(many).map((o) => o.shelfRow)).size).toBeGreaterThan(1);
+  });
+
+  it("重ならない配置はそのまま保つ", () => {
+    const input = [item("a", 60), item("b", 160), item("c", 260)];
+    expect(resolveOverlaps(input).map((o) => o.x)).toEqual([60, 160, 260]);
+  });
+
+  it("個体を失わない", () => {
+    const input = [item("a", 100), item("b", 105), item("c", 110)];
+    expect(new Set(resolveOverlaps(input).map((o) => o.uid))).toEqual(new Set(["a", "b", "c"]));
+  });
+
+  it("全段が満杯でも終了し、個体を失わない（無限ループしない）", () => {
+    const many = Array.from({ length: 20 }, (_, i) => item(`p${i}`, 160, 1, 34));
+    const out = resolveOverlaps(many);
+    expect(out).toHaveLength(20);
+  });
+
+  it("完全に同座標が多数あっても終了する", () => {
+    const same = Array.from({ length: 8 }, (_, i) => item(`s${i}`, 160, 0, 32));
+    expect(() => resolveOverlaps(same)).not.toThrow();
+    expect(resolveOverlaps(same)).toHaveLength(8);
+  });
+});
+
+describe("rowCapacity", () => {
+  it("1段あたり4匹以上入る", () => {
+    expect(rowCapacity(0)).toBeGreaterThanOrEqual(4);
+  });
+});
 
 describe("rowFromY", () => {
   it("各段のY座標が対応する段に落ちる", () => {
@@ -1873,9 +2147,16 @@ describe("snapPlacement", () => {
 Run: `npm test`
 Expected: FAIL — `rowFromY is not exported`
 
-- [ ] **Step 3: shelfLayout.ts に `rowFromY` と `snapPlacement` を追加する**
+- [ ] **Step 3: shelfLayout.ts に配置ロジックを追加する**
 
-`snapPlacement(uid, x, row, r, others)` は `{ x, shelfRow, reverted }` を返す純粋関数。押し出し不能なら空きのある段へ、それも不可なら `reverted: true` を返す。
+`resolveOverlaps` は同じ `shelfRow` 内で x 昇順に並べ、隣接距離が `ra + rb` 未満なら右へ押し出す。
+右端に収まらなくなった個体は空きのある段へ移す。全段が埋まっていれば最も空いている段へ
+最小の重なりで置く（表示上の破綻より、個体が消えないことを優先する）。
+**反復回数に上限を設け、収束しなくても必ず終了させる。**
+
+`snapPlacement(uid, x, row, r, others)` は `{ x, shelfRow, reverted }` を返す。
+押し出し不能なら空きのある段へ、それも不可なら `reverted: true` を返す。
+`others` に自分自身が含まれていても自己衝突しないよう `uid` で除外する。
 
 - [ ] **Step 4: useDragPlacement.ts を書く**
 
@@ -1891,7 +2172,7 @@ Expected: FAIL — `rowFromY is not exported`
 - [ ] **Step 5: テストを実行して通ることを確認する**
 
 Run: `npm test`
-Expected: PASS — shelfLayout 13件
+Expected: PASS — shelfLayout 20件
 
 - [ ] **Step 6: 目視確認（スマホ幅で必ず行う）**
 
@@ -2282,7 +2563,7 @@ git commit -m "feat: 統合・レスポンシブ対応と実プレイ評価"
 | 7.8 回帰テスト | Task 7 |
 | 7.9 見守り | Task 9 |
 | 8. 出会いの演出 | Task 5 |
-| 9. 棚の配置 | Task 4（レイアウト）+ Task 10（ドラッグ） |
+| 9. 棚の配置 | Task 4（スロット割当）+ Task 10（重なり解消・収容上限・ドラッグ） |
 | 10. シェア | Task 11 |
 | 11. プレイログ | Task 3（基盤）+ 各タスクで記録 |
 | 12. Developer Menu | Task 13 |
