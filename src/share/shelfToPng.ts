@@ -203,12 +203,7 @@ export function renderShelfPng(svg: string, count: number): Promise<Blob> {
     const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const img = new Image();
-
-    // 読み込まれないまま固まらないようにする
-    const timer = window.setTimeout(() => {
-      cleanup();
-      reject(new Error("svg load timeout"));
-    }, 8000);
+    let timer = 0;
 
     const cleanup = () => {
       window.clearTimeout(timer);
@@ -216,6 +211,19 @@ export function renderShelfPng(svg: string, count: number): Promise<Blob> {
       img.onload = null;
       img.onerror = null;
     };
+
+    // 読み込まれないまま固まらないようにする。
+    // タイマーの設定自体が失敗しても URL を残さない。
+    try {
+      timer = window.setTimeout(() => {
+        cleanup();
+        reject(new Error("svg load timeout"));
+      }, 8000);
+    } catch (e) {
+      cleanup();
+      reject(e instanceof Error ? e : new Error(String(e)));
+      return;
+    }
 
     img.onload = () => {
       try {

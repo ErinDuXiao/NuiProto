@@ -450,3 +450,13 @@ button {
     box-shadow: 0 0 60px rgba(90, 72, 56, 0.1);
   }
 }
+
+/* 保存できていないことの控えめな通知。驚かせずに、しかし黙らない */
+.persist-warn {
+  margin: 0;
+  padding: 6px 18px 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #a3826f;
+  text-align: center;
+}

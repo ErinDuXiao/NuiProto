@@ -183,6 +183,16 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
       </svg>
       </div>
 
+      {/*
+        保存できていないことは、隠れた開発メニューではなくここで伝える。
+        遊んだ結果が消えることを黙っているのは不誠実。
+      */}
+      {!store.isPersisted() && (
+        <p className="persist-warn">
+          このブラウザでは記録を保存できないみたい。とじると消えてしまいます。
+        </p>
+      )}
+
       {/* 演出中はナビゲーションを止める。途中で画面を離れると演出が中断される */}
       <nav className="shelf-actions">
         <button className="btn primary" onClick={onGoArcade} disabled={ceremony.active}>

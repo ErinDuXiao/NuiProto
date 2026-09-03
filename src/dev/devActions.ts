@@ -80,15 +80,19 @@ function summarize(s: SaveV1) {
 
 /** JSON をファイルとしてダウンロードさせる。 */
 export function downloadJson(name: string, json: string): void {
+  let url: string | null = null;
   try {
     const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
+    url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = name;
     a.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const created = url;
+    window.setTimeout(() => URL.revokeObjectURL(created), 1000);
+    url = null;
   } catch {
-    // ダウンロードできない環境では何もしない
+    // 途中で失敗しても URL を残さない
+    if (url) URL.revokeObjectURL(url);
   }
 }
