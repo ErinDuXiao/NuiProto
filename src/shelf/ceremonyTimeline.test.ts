@@ -53,6 +53,28 @@ describe("ceremonyAt (初回)", () => {
     expect(p.sparkle).toBe(true);
   });
 
+  it("新入りは2回跳ねる（仕様8章）", () => {
+    // 単一時刻で正の値を見るだけでは1回跳ねただけでも通ってしまう。
+    // hop の山の数を数えて2回であることを確かめる。
+    const samples: number[] = [];
+    for (let t = 0; t <= 4000; t += 10) samples.push(ceremonyAt(t, true).guestHop);
+    let peaks = 0;
+    for (let i = 1; i < samples.length - 1; i++) {
+      if (samples[i] > 1 && samples[i] >= samples[i - 1] && samples[i] > samples[i + 1]) peaks++;
+    }
+    expect(peaks, `山の数=${peaks}`).toBe(2);
+  });
+
+  it("跳ねたあとは必ず着地する（浮いたまま終わらない）", () => {
+    expect(ceremonyAt(4000, true).guestHop).toBe(0);
+    expect(ceremonyAt(2400, false).guestHop).toBe(0);
+  });
+
+  it("セリフを差し替えられる（同じ子が続けて迎え役でも同じことを言わない）", () => {
+    const p = ceremonyAt(1100, true, { host: "ようこそ。", guest: "わぁ。" });
+    expect(p.hostLine).toBe("ようこそ。");
+  });
+
   it("3.2秒に Welcome home. が出る", () => {
     expect(ceremonyAt(3300, true).caption).toBe("Welcome home.");
   });

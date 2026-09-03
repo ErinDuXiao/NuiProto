@@ -28,13 +28,33 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
   const [squashed, setSquashed] = useState<Record<string, number>>({});
   /** 演出中はタップのリアクションを止める。コールバックを作り直さずに済ませる */
   const ceremonyActiveRef = useRef(false);
+  /** アンマウント後に発火させないための後片付け */
+  const squashTimers = useRef(new Set<number>());
+  const ringTimer = useRef(0);
+  /** 迎えたばかりの子。少しの間だけ淡いリングを出す（仕様8章） */
+  const [ringUid, setRingUid] = useState<string | null>(null);
+
+  useEffect(
+    () => () => {
+      for (const t of squashTimers.current) window.clearTimeout(t);
+      squashTimers.current.clear();
+      window.clearTimeout(ringTimer.current);
+    },
+    []
+  );
 
   const ceremonyUid = game.pendingWelcome;
   const onShelf = useMemo(() => game.owned.filter((o) => o.shelfRow >= 0), [game.owned]);
 
-  const ceremony = useCeremony(ceremonyUid, !game.firstMeetingDone, (skipped) =>
-    store.finishWelcome(skipped)
-  );
+  const ceremony = useCeremony(ceremonyUid, !game.firstMeetingDone, (skipped) => {
+    const arrived = store.get().pendingWelcome;
+    store.finishWelcome(skipped);
+    if (arrived) {
+      setRingUid(arrived);
+      window.clearTimeout(ringTimer.current);
+      ringTimer.current = window.setTimeout(() => setRingUid(null), 2000);
+    }
+  });
   ceremonyActiveRef.current = ceremony.active;
 
   const targets: AmbientTarget[] = useMemo(
@@ -73,13 +93,15 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
         { uid, text: pickLine("shelfTouch", seed, Math.floor(Date.now() / 1000)), until: Date.now() + 2200 },
       ]);
       setSquashed((s) => ({ ...s, [uid]: Date.now() }));
-      window.setTimeout(() => {
+      const timer = window.setTimeout(() => {
+        squashTimers.current.delete(timer);
         setSquashed((s) => {
           const next = { ...s };
           delete next[uid];
           return next;
         });
       }, 460);
+      squashTimers.current.add(timer);
     },
     []
   );
@@ -111,7 +133,10 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
             <g key={o.uid} transform={`translate(0 ${y})`}>
               <g
                 ref={(el) => {
-                  refs.current.set(o.uid, el);
+                  // React は外すときに null を渡す。消さないと棚から居なくなった
+                  // 個体のエントリが残り続ける
+                  if (el) refs.current.set(o.uid, el);
+                  else refs.current.delete(o.uid);
                 }}
                 transform={`translate(${o.x} 0)`}
                 onPointerDown={() => touch(o.uid, o.defId, o.seed)}
@@ -119,17 +144,19 @@ export function ShelfScreen({ onGoArcade, onShare }: Props) {
               >
                 <PlushSVG def={def} pose={pose} seed={o.seed} />
               </g>
+              {o.uid === ringUid && <WelcomeRing x={o.x} r={def.size} />}
               {bubble && <Bubble x={o.x} y={plushTop(def) - 14} text={bubble.text} />}
             </g>
           );
         })}
       </svg>
 
+      {/* 演出中はナビゲーションを止める。途中で画面を離れると演出が中断される */}
       <nav className="shelf-actions">
-        <button className="btn primary" onClick={onGoArcade}>
+        <button className="btn primary" onClick={onGoArcade} disabled={ceremony.active}>
           ゲームセンターへ
         </button>
-        <button className="btn" onClick={onShare}>
+        <button className="btn" onClick={onShare} disabled={ceremony.active}>
           棚をシェア
         </button>
       </nav>
@@ -217,6 +244,24 @@ function Room() {
       <ellipse cx={w / 2 - 30} cy={h + 34} rx={92} ry={13} fill="#ddcdb6" />
       <ellipse cx={w / 2 - 30} cy={h + 34} rx={62} ry={8} fill="#e6d9c6" />
     </g>
+  );
+}
+
+/** 迎えたばかりの子の足元に出る、ごく淡いリング。 */
+function WelcomeRing({ x, r }: { x: number; r: number }) {
+  return (
+    <ellipse
+      cx={x}
+      cy={2}
+      rx={r * 1.15}
+      ry={r * 0.3}
+      fill="none"
+      stroke="#d8b98a"
+      strokeWidth={2}
+      opacity={0.55}
+    >
+      <animate attributeName="opacity" values="0.55;0.15;0.55" dur="1.6s" repeatCount="indefinite" />
+    </ellipse>
   );
 }
 

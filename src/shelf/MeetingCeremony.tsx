@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getPlush } from "../data/plushies";
+import { pickLine } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
 import { NEUTRAL_POSE, plushTop } from "../render/pose";
 import { useGame } from "../state/store";
@@ -55,6 +56,18 @@ export function useCeremony(
   const duration = ceremonyDuration(isFirstMeeting);
   const playable = Boolean(guestUid && guest && guest.shelfRow >= 0 && host);
 
+  // 同じ子が続けて迎え役になっても毎回同じことを言わないように、
+  // 個体の seed と現在の所持数からセリフを選ぶ（仕様8章）。
+  const lines = useMemo(
+    () => ({
+      host: pickLine("welcomeHost", host?.seed ?? 0, game.owned.length),
+      guest: pickLine("welcomeGuest", guest?.seed ?? 0, game.owned.length),
+    }),
+    [host?.seed, guest?.seed, game.owned.length]
+  );
+  const linesRef = useRef(lines);
+  linesRef.current = lines;
+
   useEffect(() => {
     if (!guestUid || doneRef.current === guestUid) return;
 
@@ -77,7 +90,7 @@ export function useCeremony(
 
     const tick = (now: number) => {
       const t = now - started;
-      setPhase(ceremonyAt(t, isFirstMeeting));
+      setPhase(ceremonyAt(t, isFirstMeeting, linesRef.current));
       if (t >= duration) {
         // 最終状態を一瞬見せてから配置操作を解放する
         finishTimer = window.setTimeout(finish, 500);
@@ -109,7 +122,7 @@ export function useCeremony(
     skip: () => {
       if (doneRef.current === guestUid) return;
       doneRef.current = guestUid;
-      setPhase(ceremonyAt(duration, isFirstMeeting));
+      setPhase(ceremonyAt(duration, isFirstMeeting, linesRef.current));
       onDoneRef.current(true);
     },
   };

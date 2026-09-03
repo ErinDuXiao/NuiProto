@@ -76,7 +76,15 @@ const SHORT: Marks = {
   end: SHORT_MS,
 };
 
-export function ceremonyAt(ms: number, isFirstMeeting: boolean): CeremonyPhase {
+export type CeremonyLines = { host: string; guest: string };
+
+const DEFAULT_LINES: CeremonyLines = { host: "はじめまして！", guest: "……よろしくね。" };
+
+export function ceremonyAt(
+  ms: number,
+  isFirstMeeting: boolean,
+  lines: CeremonyLines = DEFAULT_LINES
+): CeremonyPhase {
   const m = isFirstMeeting ? FULL : SHORT;
   // 範囲外は端の状態で安定させる。演出は必ず落ち着いた形で終わる。
   const t = Math.min(Math.max(ms, 0), m.end);
@@ -98,11 +106,11 @@ export function ceremonyAt(ms: number, isFirstMeeting: boolean): CeremonyPhase {
   // 先輩が新入りの方を向く
   const hostLook = t >= m.turn ? ease((t - m.turn) / 420) : 0;
 
-  // 新入りが2回跳ねる
+  // 新入りが2回跳ねる。sin の負の山を折り返して2つの山にする
   let guestHop = 0;
   if (t >= m.bounce && t < m.settle) {
     const p = (t - m.bounce) / (m.settle - m.bounce);
-    guestHop = Math.max(0, Math.sin(p * Math.PI * 2) * 12 * (1 - p * 0.5));
+    guestHop = Math.abs(Math.sin(p * Math.PI * 2)) * 12 * (1 - p * 0.45);
   }
 
   // 先輩もつられて小さく跳ねる
@@ -121,8 +129,8 @@ export function ceremonyAt(ms: number, isFirstMeeting: boolean): CeremonyPhase {
     guestDrop,
     guestHop,
     guestSquash,
-    hostLine: greetWindow ? "はじめまして！" : undefined,
-    guestLine: guestWindow ? "……よろしくね。" : undefined,
+    hostLine: greetWindow ? lines.host : undefined,
+    guestLine: guestWindow ? lines.guest : undefined,
     caption: t >= m.caption ? "Welcome home." : undefined,
     sparkle: t >= m.bounce && t < m.bounce + 700,
   };
