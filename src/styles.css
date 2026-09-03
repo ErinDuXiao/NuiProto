@@ -250,3 +250,47 @@ button {
   padding: 2px 6px;
   border-radius: 6px;
 }
+
+/* ---------- シェア ---------- */
+
+.sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(60, 48, 38, 0.35);
+}
+
+.sheet-body {
+  width: 100%;
+  max-width: 340px;
+  background: var(--card);
+  border-radius: 20px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sheet-preview {
+  display: block;
+  width: 100%;
+  border-radius: 14px;
+  background: var(--paper);
+}
+
+.sheet-note {
+  margin: 0;
+  padding: 48px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.sheet-actions {
+  display: flex;
+  gap: 10px;
+}
