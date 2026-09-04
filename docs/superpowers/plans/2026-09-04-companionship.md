@@ -87,6 +87,81 @@
   - `loadSave(): SaveV2`（既存のシグネチャを保つ）
   - `store.winPlush(input: { plushTypeId: string; attemptsToAcquire: number; witnessedBy: string | null }): string`
   - `store.grantPlush(plushTypeId: string): void`（`origin: "granted"`）
+  - **このフェーズで使うログイベント型をすべてここで足す**（下記 Step 0）
+
+### 改名のスコープ（重要）
+
+改名するのは **`OwnedPlush` の型と、そのプロパティだけ**。
+
+**次は絶対に改名しない。** 別物であり、全域置換すると壊れる。
+
+| 触らないもの | 場所 |
+|---|---|
+| `Body.defId` | `src/arcade/physics.ts` — クレーン盤面の景品 |
+| `CraneBoardSave.prizes[].defId` | `src/state/types.ts` — 盤面の保存形 |
+| `PlushDef.id` | `src/data/plushies.ts` — 種類の定義 |
+
+`defId` を無条件に `plushTypeId` へ置換すると、物理・盤面保存・`getPlush()` が
+すべて壊れる。**型名で絞って置換すること。**
+
+### 変更が必要なファイルの見つけ方
+
+手で並べた一覧に頼らない。次を実行して、出てきたファイルをすべて直す。
+**テストファイルも対象**。
+
+```bash
+grep -rln 'OwnedPlush\|\.owned\|game\.owned' src/
+grep -rln '\buid\b' src/ | grep -v arcade/
+grep -rn 'seed:' src/ | grep -v arcade/
+```
+
+`Watcher.tsx` / `ShareSheet.tsx` / `shelfToPng.test.ts` など、
+最初の想定から漏れやすいものがここで出る。
+
+- [ ] **Step 0: このフェーズで使うログイベント型を先に全部足す**
+
+後続のタスクが使う前に用意しておく。型と、`persist.ts` の実行時許可リスト
+（`LOG_TYPES`）の**両方**に足すこと。片方だけだと、型は通るのに
+リロードで消える。
+
+`src/state/types.ts` の `LogEventType` に追加:
+
+```
+| "plush_profile_opened"
+| "plush_drag_start"
+| "plush_drag_end"
+| "neighbor_created"
+| "neighbor_removed"
+| "relationship_reaction"
+| "shelf_idle_10s"
+| "shelf_idle_30s"
+| "shelf_return_after_win"
+```
+
+`src/state/persist.ts` の `LOG_TYPES` にも同じものを足す。
+
+`persist.test.ts` に回帰テストを足す。**型と許可リストがずれないようにする。**
+
+```ts
+it("LogEventType の全種別が保存で生き残る（許可リストとずれない）", () => {
+  const all: LogEventType[] = [
+    "session_start", "shelf_view", "arcade_enter", "crane_start", "crane_drop",
+    "plush_grabbed", "plush_dropped", "plush_moved", "plush_won", "shelf_return",
+    "plush_placed", "plush_repositioned", "share_clicked", "share_result",
+    "welcome_played", "plush_touched", "shelf_dwell",
+    "plush_profile_opened", "plush_drag_start", "plush_drag_end",
+    "neighbor_created", "neighbor_removed", "relationship_reaction",
+    "shelf_idle_10s", "shelf_idle_30s", "shelf_return_after_win",
+  ];
+  const s = initialSave();
+  s.log = all.map((type, i) => ({ type, t: i, sessionId: "s" }));
+  writeSave(s);
+  expect(loadSave().log.map((e) => e.type)).toEqual(all);
+});
+```
+
+この配列は手で書く。`LogEventType` から自動生成すると、
+型に足し忘れたときにテストも一緒に見逃してしまう。
 
 - [ ] **Step 1: 移行の失敗するテストを書く**
 
@@ -291,7 +366,11 @@ it("同じ種類を2匹取っても別個体として保存される（スタッ
 
 - [ ] **Step 8: 参照側をすべて更新する**
 
-`npx tsc --noEmit` が通るまで機械的に置換する。ロジックは変えない。
+上の `grep` で出たファイルをすべて直す。**ロジックは変えない。**
+
+`Body.defId` と `CraneBoardSave.prizes[].defId` は**触らない**。
+`npx tsc --noEmit` が通り、かつ `src/arcade/` のテストが全部通ることを確認する。
+アーケード側のテストが落ちたら、それは触ってはいけないものを触った合図。
 
 - [ ] **Step 9: 全テストを実行する**
 
@@ -310,66 +389,152 @@ git commit -m "feat: スキーマv2とPlushInstanceへの移行"
 ## Task 2: 取得時の来歴を実フロー経由で保存する
 
 **Files:**
-- Modify: `src/arcade/craneMachine.ts`（`resolveWin` を追加）
+- Modify: `src/arcade/physics.ts`（`fallen` が種類も運ぶ）
+- Modify: `src/arcade/craneMachine.ts`（`resolveWin` を追加、`CraneEvent` に `defId`）
+- Create: `src/arcade/commitWin.ts`
 - Modify: `src/arcade/ArcadeScreen.tsx`
-- Test: `src/arcade/provenanceFlow.test.ts`
+- Test: `src/arcade/provenanceFlow.test.ts`, `src/arcade/physics.test.ts`（更新）, `src/arcade/craneMachine.test.ts`（更新）
 
 **Interfaces:**
 - Consumes: `Crane`, `physics.step`, `store.winPlush`
 - Produces:
-  - `resolveWin(crane: Crane, bodyId: string, watcherInstanceId: string | null): { plushTypeId: string; attemptsToAcquire: number; witnessedBy: string | null }`
+  - `type FallenPrize = { id: string; defId: string }`
+  - `StepResult.fallen: FallenPrize[]`（`string[]` から変更）
+  - `CraneEvent = { kind; bodyId?; defId? }`
+  - `resolveWin(crane: Crane, won: FallenPrize, watcherInstanceId: string | null): { plushTypeId; attemptsToAcquire; witnessedBy }`
+  - `commitWin(crane: Crane, won: FallenPrize, watcherInstanceId: string | null): string`
 
 **この Task がこのフェーズで最も間違えやすい。**
 前フェーズで「試行回数は保存済み」と書いて事実誤認だったのと同じ場所である。
 
-- [ ] **Step 1: 実フローを通す失敗するテストを書く**
+### 設計上の注意 1: 種類を ID 文字列から復元しない
+
+盤面の景品 ID は `"rabbit_01#0"` の形をしているが、**そこから
+`split("#")[0]` で種類を取り出す設計にしてはならない。**
+ID の作り方を変えた瞬間に、来歴の種類が静かに壊れる。
+
+代わりに、**物理が景品を取り除くときに種類も一緒に報告する**。
+
+```ts
+export type FallenPrize = { id: string; defId: string };
+// StepResult.fallen: FallenPrize[]
+```
+
+`step()` は `bodies.splice()` する直前に `defId` を読めるので、
+情報を失わずに渡せる。`craneMachine` の `acquire()` も同様。
+
+これは既存テストの `expect(settle(b, 4)).toContain("a")` を壊す。
+`.map(f => f.id)` を挟んで直す。**壊れたテストは正しい設計の代償として受け入れる。**
+
+### 設計上の注意 2: 距離の作り方
+
+`n` 回目で獲得する状況を作るには、`advanceGoal` と出口半径の関係を使う。
+
+- 各試行で出口距離は `MIN_ADVANCE`(30px) 以上縮む
+- `settle` は `advanceGoal(before) = before - 30` が `exit.r`(34) 以下になったとき獲得
+
+したがって「その試行で獲得する」条件は `before <= exit.r + MIN_ADVANCE = 64`。
+
+開始距離 `D` から `k` 回目の試行に入るときの距離は `D - 30(k-1)`。
+`n` 回目でちょうど獲得させたいので
+
+```
+D - 30(n-1) <= 64        かつ     D - 30(n-2) > 64
+→  34 + 30(n-1) < D <= 64 + 30(n-1)
+```
+
+**定数から導く。数値を直接埋め込まない。**
+
+```ts
+const dist = DEFAULT_PIT.exit.r + MIN_ADVANCE * n - 5;
+// n=1 → 59, n=2 → 89, n=3 → 119, n=4 → 149
+```
+
+当初この計画に書いた `30n + 4` は誤りで、n=2 が1回目で取れてしまう。
+**テストの前提が崩れていることに気づけるよう、実際に何回目で取れたかを
+必ず assert する。**
+
+- [ ] **Step 1: 物理が種類も報告するテストを書く**
+
+`src/arcade/physics.test.ts` の既存の出口テストを更新し、次を追記する。
+
+```ts
+it("落ちた景品の種類も一緒に報告する（IDから復元させない）", () => {
+  const b = [body({ id: "x1", defId: "rabbit_01",
+                     x: DEFAULT_PIT.exit.x, z: DEFAULT_PIT.exit.z, y: 100 })];
+  let fallen: { id: string; defId: string }[] = [];
+  for (let i = 0; i < 600; i++) fallen.push(...step(b, DEFAULT_PIT, STEP).fallen);
+  expect(fallen).toHaveLength(1);
+  expect(fallen[0].id).toBe("x1");
+  expect(fallen[0].defId).toBe("rabbit_01");
+});
+```
+
+既存の `expect(settle(b, 4)).toContain("a")` は
+`expect(settle(b, 4).map((f) => f.id)).toContain("a")` に直す。
+
+- [ ] **Step 2: 実フローを通す失敗するテストを書く**
 
 `src/arcade/provenanceFlow.test.ts`:
 
 ```ts
 import { describe, it, expect, beforeEach } from "vitest";
-import { createCrane, startDrop, tickCrane, resolveWin } from "./craneMachine";
-import { step, DEFAULT_PIT, STEP, atRest, type Body } from "./physics";
+import {
+  createCrane, startDrop, tickCrane, resolveWin, commitWin, MIN_ADVANCE,
+} from "./craneMachine";
+import { step, DEFAULT_PIT, STEP, atRest, type Body, type FallenPrize } from "./physics";
 import { getPlush } from "../data/plushies";
 import { store } from "../state/store";
 
-const prize = (x: number, z: number, id = "p1"): Body => ({
+const prize = (x: number, z: number, id = "rabbit_01#0"): Body => ({
   id, defId: "rabbit_01", x, z, y: 0, vx: 0, vy: 0, vz: 0,
   r: getPlush("rabbit_01").size, spin: 0, held: false,
 });
 
-/**
- * 実際の物理と状態機械を回して1回 DROP する。
- * 獲得したらその won の bodyId を返す。
- */
-function runAttempt(c: ReturnType<typeof createCrane>, bodies: Body[], ax: number, az: number) {
-  c.armX = ax; c.armZ = az;
+/** 実際の物理と状態機械を回して1回 DROP し、獲得したらその景品を返す。 */
+function runAttempt(
+  c: ReturnType<typeof createCrane>,
+  bodies: Body[],
+  ax: number,
+  az: number
+): FallenPrize | null {
+  c.armX = ax;
+  c.armZ = az;
   startDrop(c, bodies, DEFAULT_PIT);
-  let wonId: string | null = null;
+  let won: FallenPrize | null = null;
   let flush = -1;
   for (let i = 0; i < 120 * 30; i++) {
-    for (const id of step(bodies, DEFAULT_PIT, STEP).fallen) wonId ??= id;
+    for (const f of step(bodies, DEFAULT_PIT, STEP).fallen) won ??= f;
     for (const e of tickCrane(c, bodies, DEFAULT_PIT, STEP)) {
-      if (e.kind === "won" && e.bodyId) wonId ??= e.bodyId;
+      if (e.kind === "won" && e.bodyId && e.defId) {
+        won ??= { id: e.bodyId, defId: e.defId };
+      }
     }
-    if (flush >= 0) { if (++flush >= 40) break; }
-    else if (c.state === "idle" && atRest(bodies)) flush = 0;
+    if (flush >= 0) {
+      if (++flush >= 40) break;
+    } else if (c.state === "idle" && atRest(bodies)) {
+      flush = 0;
+    }
   }
-  return wonId;
+  return won;
 }
 
-/** N 回目の DROP で獲得する状況を作り、その時の crane と bodyId を返す。 */
+/**
+ * ちょうど n 回目の DROP で獲得する状況を作る。
+ *
+ * 各試行で出口距離は MIN_ADVANCE 以上縮み、
+ * before <= exit.r + MIN_ADVANCE になった試行で獲得する。
+ * 数値は定数から導く（直接埋め込むと、定数が変わったとき静かに壊れる）。
+ */
 function winOnAttempt(n: number) {
-  // 出口距離を調整して、n 回目でちょうど獲得できるようにする。
-  // 毎試行 MIN_ADVANCE(30px) 縮むので、n 回で届く距離に置く。
-  const dist = 30 * n + 4;
+  const dist = DEFAULT_PIT.exit.r + MIN_ADVANCE * n - 5;
   const bodies = [prize(DEFAULT_PIT.exit.x + dist, DEFAULT_PIT.exit.z)];
   const c = createCrane();
   for (let i = 1; i <= n; i++) {
-    const wonId = runAttempt(c, bodies, 9999, 9999); // 常に外す
-    if (wonId) return { crane: c, bodyId: wonId, attempt: i };
+    const won = runAttempt(c, bodies, 9999, 9999); // 常に外す
+    if (won) return { crane: c, won, attempt: i };
   }
-  throw new Error(`${n} 回で獲得できなかった`);
+  throw new Error(`${n} 回で獲得できなかった（開始距離 ${dist}）`);
 }
 
 beforeEach(() => {
@@ -380,10 +545,12 @@ beforeEach(() => {
 describe("来歴が実フローを通して正しく保存される", () => {
   for (const n of [1, 2, 3, 4]) {
     it(`${n} 回目で取れた子の attemptsToAcquire が ${n} になる`, () => {
-      const { crane, bodyId, attempt } = winOnAttempt(n);
-      expect(attempt, "テストの前提が崩れている").toBe(n);
+      const { crane, won, attempt } = winOnAttempt(n);
+      // テストの前提が崩れていたらここで落ちる
+      expect(attempt, `${n} 回目のはずが ${attempt} 回目で取れた`).toBe(n);
+      expect(crane.attemptsOnBoard).toBe(n);
 
-      const resolved = resolveWin(crane, bodyId, "watcher-1");
+      const resolved = resolveWin(crane, won, "watcher-1");
       expect(resolved.attemptsToAcquire).toBe(n);
       expect(resolved.plushTypeId).toBe("rabbit_01");
       expect(resolved.witnessedBy).toBe("watcher-1");
@@ -392,37 +559,83 @@ describe("来歴が実フローを通して正しく保存される", () => {
       const saved = store.get().instances.find((i) => i.instanceId === id)!;
       expect(saved.attemptsToAcquire).toBe(n);
       expect(saved.witnessedBy).toBe("watcher-1");
+      expect(saved.origin).toBe("crane");
     });
   }
 
   it("獲得後に盤面が補充されても、保存済みの値は書き換わらない", () => {
-    const { crane, bodyId } = winOnAttempt(2);
-    const id = store.winPlush(resolveWin(crane, bodyId, null));
-    // 盤面を作り直す（attemptsOnBoard が 0 に戻る）
-    crane.attemptsOnBoard = 0;
+    const { crane, won } = winOnAttempt(2);
+    const id = commitWin(crane, won, null);
+    crane.attemptsOnBoard = 0; // 盤面を作り直した状況
     store.saveBoard(null);
-    expect(store.get().instances.find((i) => i.instanceId === id)!.attemptsToAcquire).toBe(2);
+    expect(
+      store.get().instances.find((i) => i.instanceId === id)!.attemptsToAcquire
+    ).toBe(2);
+  });
+
+  it("種類は ID 文字列ではなく景品そのものから決まる", () => {
+    const { crane } = winOnAttempt(1);
+    // ID の形が変わっても種類は壊れない
+    const odd: FallenPrize = { id: "whatever-42", defId: "penguin_01" };
+    expect(resolveWin(crane, odd, null).plushTypeId).toBe("penguin_01");
   });
 
   it("見守り役がいない場合は witnessedBy が null になる", () => {
-    const { crane, bodyId } = winOnAttempt(1);
-    expect(resolveWin(crane, bodyId, null).witnessedBy).toBeNull();
+    const { crane, won } = winOnAttempt(1);
+    expect(resolveWin(crane, won, null).witnessedBy).toBeNull();
   });
+});
 
-  it("bodyId から正しい種類を取り出す", () => {
-    const { crane, bodyId } = winOnAttempt(1);
-    expect(bodyId.startsWith("rabbit_01")).toBe(true);
-    expect(resolveWin(crane, bodyId, null).plushTypeId).toBe("rabbit_01");
+describe("commitWin の順序", () => {
+  it("盤面を捨てる前に来歴を保存する", () => {
+    const { crane, won } = winOnAttempt(1);
+    const order: string[] = [];
+    const realWin = store.winPlush.bind(store);
+    const realSave = store.saveBoard.bind(store);
+    store.winPlush = (i) => {
+      order.push("win");
+      return realWin(i);
+    };
+    store.saveBoard = (b) => {
+      order.push("save");
+      realSave(b);
+    };
+    try {
+      commitWin(crane, won, null);
+    } finally {
+      store.winPlush = realWin;
+      store.saveBoard = realSave;
+    }
+    expect(order).toEqual(["win", "save"]);
   });
 });
 ```
 
-- [ ] **Step 2: テストを実行して失敗を確認する**
+- [ ] **Step 3: テストを実行して失敗を確認する**
 
 Run: `npx vitest run src/arcade/provenanceFlow.test.ts`
 Expected: FAIL — `resolveWin is not exported`
 
-- [ ] **Step 3: resolveWin を実装する**
+- [ ] **Step 4: 物理とクレーンを更新する**
+
+`physics.ts`:
+
+```ts
+export type FallenPrize = { id: string; defId: string };
+
+export type StepResult = {
+  /** このステップで出口へ落ちた景品。種類も一緒に運ぶ */
+  fallen: FallenPrize[];
+  impacts: number;
+};
+```
+
+出口判定で `bodies.splice()` する直前に `{ id: b.id, defId: b.defId }` を積む。
+
+`craneMachine.ts` の `CraneEvent` に `defId?: string` を足し、
+`acquire()` で `{ kind: "won", bodyId: target.id, defId: target.defId }` を積む。
+
+- [ ] **Step 5: resolveWin と commitWin を書く**
 
 ```ts
 /**
@@ -430,48 +643,74 @@ Expected: FAIL — `resolveWin is not exported`
  *
  * attemptsOnBoard は盤面が補充されると 0 に戻る。したがってこの関数は
  * **won を処理した直後、盤面を作り直す前に**呼ばなければならない。
- * 呼び出し側（ArcadeScreen）はこの結果を store へ渡すだけにする。
+ * 種類は ID 文字列から復元せず、落ちた景品そのものから受け取る。
  */
 export function resolveWin(
   crane: Crane,
-  bodyId: string,
+  won: FallenPrize,
   watcherInstanceId: string | null
 ): { plushTypeId: string; attemptsToAcquire: number; witnessedBy: string | null } {
   return {
-    plushTypeId: bodyId.split("#")[0],
+    plushTypeId: won.defId,
     attemptsToAcquire: Math.max(1, crane.attemptsOnBoard),
     witnessedBy: watcherInstanceId,
   };
 }
 ```
 
-- [ ] **Step 4: ArcadeScreen を繋ぐ**
+`src/arcade/commitWin.ts`:
 
-`handleEvent` の `won` を次にする。値を決める仕事は `resolveWin` に任せ、
-画面側には渡す一行しか残さない。
+```ts
+/**
+ * 獲得の後始末をまとめて行う。
+ *
+ * **順序が意味を持つ。** 盤面を捨てる前に来歴を保存すること。
+ * 逆にすると attemptsOnBoard がリセットされてから読むことになりかねない。
+ * 画面側にこの順序を任せず、ここに閉じ込める。
+ */
+export function commitWin(
+  crane: Crane,
+  won: FallenPrize,
+  watcherInstanceId: string | null
+): string {
+  const id = store.winPlush(resolveWin(crane, won, watcherInstanceId));
+  store.saveBoard(null);
+  store.log("shelf_return_after_win", { plushId: won.defId });
+  return id;
+}
+```
+
+- [ ] **Step 6: ArcadeScreen を繋ぐ**
+
+画面側には一行しか残さない。
 
 ```ts
 case "won": {
   if (wonRef.current) break;
   wonRef.current = true;
   sfx.success();
-  if (!e.bodyId) break;
-  store.winPlush(resolveWin(crane, e.bodyId, watcherRef.current?.instanceId ?? null));
-  store.saveBoard(null);
-  store.log("shelf_return_after_win");
+  if (!e.bodyId || !e.defId) break;
+  commitWin(crane, { id: e.bodyId, defId: e.defId }, watcherRef.current?.instanceId ?? null);
   returnTimer.current = window.setTimeout(() => goShelfRef.current(), 1500);
   break;
 }
 ```
 
+物理由来の `fallen` も同じ経路に流す。
+
+```ts
+for (const f of r.fallen) handleEvent({ kind: "won", bodyId: f.id, defId: f.defId });
+```
+
 `watcherRef` は見守り役の `PlushInstance` を保持する ref（レンダー時に代入）。
 
-- [ ] **Step 5: テストを実行して通ることを確認する**
+- [ ] **Step 7: 全テストを実行する**
 
 Run: `npm test`
-Expected: PASS — provenanceFlow 7件を含む全件
+Expected: PASS — provenanceFlow 7件を含む全件。
+既存の `fallen` を使うテストを `.map(f => f.id)` に直すこと。
 
-- [ ] **Step 6: コミット**
+- [ ] **Step 8: コミット**
 
 ```bash
 git add -A
@@ -646,6 +885,9 @@ git commit -m "feat: 個体の来歴とプロフィール表示"
 **Interfaces:**
 - Consumes: `PlushInstance`, `SHELF`
 - Produces:
+  - （このタスクで `individuality()` に `leanPreference` / `sleepiness` /
+    `socialDistance` を足す。Task 5 の指揮が `sleepiness` を必要とするため、
+    元の計画の Task 6 から前倒しする）
   - `NEIGHBOR_LINK_DISTANCE = 110`, `NEIGHBOR_BREAK_DISTANCE = 124`
   - `type NeighborLink = { a: string; b: string; distance: number; closeness: number; sameType: boolean; cameHomeTogether: boolean; togetherMs: number; affinity: number }`
   - `shelfPointOf(p: PlushInstance): { x: number; y: number }`
@@ -804,6 +1046,39 @@ describe("親密度", () => {
   });
 });
 
+describe("隣接は各方向でいちばん近い1匹だけ（仕様5.1）", () => {
+  it("同じ段に3匹並ぶと、端どうしは隣接しない", () => {
+    const r = fresh([
+      inst("l", 78, 1),
+      inst("m", 78 + SLOT_SPACING, 1),
+      inst("rr", 78 + SLOT_SPACING * 2, 1),
+    ]);
+    const keys = r.links.map((k) => pairKey(k.a, k.b));
+    expect(keys).toContain(pairKey("l", "m"));
+    expect(keys).toContain(pairKey("m", "rr"));
+    // 端どうしは間に m がいるので隣ではない
+    expect(keys).not.toContain(pairKey("l", "rr"));
+  });
+
+  it("重なって置かれても、隣は左右上下でそれぞれ1匹まで", () => {
+    // 距離だけで判定すると 3 匹が総当たりで 3 本張ってしまう
+    const r = fresh([inst("a", 160, 1), inst("b", 168, 1), inst("c", 176, 1)]);
+    for (const id of ["a", "b", "c"]) {
+      const degree = r.links.filter((k) => k.a === id || k.b === id).length;
+      expect(degree, `${id} の隣が多すぎる`).toBeLessThanOrEqual(4);
+    }
+    expect(r.links.map((k) => pairKey(k.a, k.b))).not.toContain(pairKey("a", "c"));
+  });
+
+  it("リンクは対称。片方から見て隣なら、もう片方から見ても隣", () => {
+    const r = fresh([inst("a", 100, 1), inst("b", 170, 1), inst("c", 240, 1)]);
+    for (const k of r.links) {
+      expect(k.a < k.b, "リンクの端点は辞書順に正規化されている").toBe(true);
+    }
+    expect(new Set(r.links.map((k) => pairKey(k.a, k.b))).size).toBe(r.links.length);
+  });
+});
+
 describe("規模", () => {
   it("棚が満杯でもリンクは幾何的な上界を超えない", () => {
     const all: PlushInstance[] = [];
@@ -818,9 +1093,12 @@ describe("規模", () => {
     expect(r.links.length).toBeGreaterThan(0);
   });
 
-  it("全員が同座標でも落ちない", () => {
+  it("全員が同座標でも、リンクが総当たりにならない", () => {
+    // 距離だけで判定すると C(12,2) = 66 本になる。それは「隣にいる」ではない。
     const all = Array.from({ length: 12 }, (_, i) => inst(`p${i}`, 160, 1));
-    expect(() => fresh(all)).not.toThrow();
+    const r = fresh(all);
+    expect(r.links.length, "総当たりになっている").toBeLessThanOrEqual(24);
+    expect(Object.keys(r.neighborSince).length).toBeLessThanOrEqual(24);
   });
 
   it("0匹・1匹でも落ちない", () => {
@@ -844,6 +1122,21 @@ Expected: FAIL — `Failed to resolve import "./neighbors"`
 - [ ] **Step 3: neighbors.ts を書く**
 
 純粋関数。DOM にも React にも触れない。
+
+**隣接は距離だけで決めない。** 各個体について左・右・上・下のそれぞれで
+いちばん近い1匹を候補にし、その候補が距離条件を満たすときだけリンクを張る。
+
+```
+左  = 同じ段で x が小さい側のうち最も近い1匹
+右  = 同じ段で x が大きい側のうち最も近い1匹
+上  = 1段上で、x の差が最も小さい1匹
+下  = 1段下で、x の差が最も小さい1匹
+```
+
+距離だけで判定すると、重ねて置かれた 12 匹が総当たりで 66 本のリンクを
+張ってしまい、「隣にいる」という言葉の意味が壊れる。
+
+リンクは `a < b`（辞書順）に正規化して重複を持たない。
 
 `affinity = closeness * 1.0 + sameType * 0.5 + cameHomeTogether * 0.8 + min(togetherMs/120000, 1) * 0.4`
 
@@ -873,15 +1166,36 @@ git commit -m "feat: 棚の隣接リンク計算"
 - Test: `src/shelf/shelfDirector.test.ts`
 
 **Interfaces:**
-- Consumes: `NeighborLink`
+- Consumes: `NeighborLink`, `pairKey`
 - Produces:
   - `type EpisodeKind = "look" | "sameDirection" | "sleepTogether" | "greeting"`
   - `type Episode = { kind: EpisodeKind; a: string; b: string; startedAt: number; durationMs: number }`
-  - `type DirectorState = { episode: Episode | null; nextAt: number }`
+  - `type DirectorState = { episode: Episode | null; fading: { episode: Episode; until: number } | null; nextAt: number }`
+  - `type Personality = { sleepiness: number }`
   - `createDirector(now: number): DirectorState`
-  - `tickDirector(s: DirectorState, links: NeighborLink[], created: string[], now: number, rnd: () => number): { state: DirectorState; started: Episode | null; ended: Episode | null }`
-  - `episodePose(ep: Episode, instanceId: string, now: number): { lookAt: number; hop: number; eyeOpen: number; tilt: number }`
+  - `tickDirector(s, links, created, personalities: Record<string, Personality>, now, rnd): { state; started: Episode | null; ended: Episode | null }`
+  - `directorPose(s: DirectorState, instanceId: string, now: number): { lookAt; hop; eyeOpen; tilt }`
   - `EPISODE_MIN_GAP_MS = 6000`, `EPISODE_MAX_GAP_MS = 14000`
+  - `EPISODE_MIN_MS = 2000`, `EPISODE_MAX_MS = 3000`, `FADE_MS = 300`
+
+### 設計上の注意 1: 中断の後始末を状態として持つ
+
+`greeting` が走っている挿話を打ち切るとき、関与していた個体の姿勢を
+**300ms かけて中立へ戻す**（仕様5.4）。
+
+そのため状態は「いま走っている挿話」と「消えかけている挿話」の
+**2つを同時に持つ**。片方しか持たないと、割り込みの瞬間に
+姿勢が飛んで見える。
+
+姿勢は `directorPose` が両方を合成して返す。
+
+### 設計上の注意 2: 眠さは affinity に混ぜない
+
+`affinity` は「どのリンクを選ぶか」を決める値。そこに眠さを混ぜると、
+眠い子のリンクで `look` や `greeting` まで起きやすくなってしまう。
+
+個体の性格は別の引数 `personalities` として渡し、
+**挿話の種類を選ぶときにだけ**使う。
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -890,8 +1204,9 @@ git commit -m "feat: 棚の隣接リンク計算"
 ```ts
 import { describe, it, expect } from "vitest";
 import {
-  createDirector, tickDirector, episodePose,
-  EPISODE_MIN_GAP_MS, EPISODE_MAX_GAP_MS,
+  createDirector, tickDirector, directorPose,
+  EPISODE_MIN_GAP_MS, EPISODE_MAX_GAP_MS, EPISODE_MAX_MS, FADE_MS,
+  type DirectorState, type Episode, type Personality,
 } from "./shelfDirector";
 import { pairKey, type NeighborLink } from "./neighbors";
 
@@ -900,105 +1215,146 @@ const link = (a: string, b: string, affinity = 1): NeighborLink => ({
   sameType: false, cameHomeTogether: false, togetherMs: 0, affinity,
 });
 
-function seq(values: number[]) {
-  let i = 0;
-  return () => values[i++ % values.length];
+/** 等間隔に 0..1 を返す決定論的な乱数。呼ぶたびに次へ進む。 */
+function evenRnd(step = 0.137, start = 0.05) {
+  let v = start;
+  return () => {
+    const out = v;
+    v = (v + step) % 1;
+    return out;
+  };
+}
+
+const NO_PERSONALITY: Record<string, Personality> = {};
+
+/**
+ * 指揮を回して、始まった挿話を集める。
+ * 乱数はループの外で1つ作り、順に消費させる。
+ */
+function run(
+  links: NeighborLink[],
+  ms: number,
+  opts: { rnd?: () => number; personalities?: Record<string, Personality> } = {}
+) {
+  const rnd = opts.rnd ?? evenRnd();
+  const personalities = opts.personalities ?? NO_PERSONALITY;
+  let s = createDirector(0);
+  const started: Array<Episode & { at: number }> = [];
+  const ended: Array<Episode & { at: number }> = [];
+  /** いま走っているとテストが考えている挿話 */
+  let active: Episode | null = null;
+  const violations: string[] = [];
+
+  for (let t = 0; t <= ms; t += 50) {
+    const r = tickDirector(s, links, [], personalities, t, rnd);
+    s = r.state;
+
+    if (r.ended) {
+      ended.push({ ...r.ended, at: t });
+      if (active && r.ended.startedAt === active.startedAt) active = null;
+    }
+    if (r.started) {
+      // 走っている最中に別の挿話が始まってはいけない
+      if (active) violations.push(`t=${t}: 前の挿話が終わる前に次が始まった`);
+      started.push({ ...r.started, at: t });
+      active = r.started;
+    }
+    // 走っているはずの挿話が state から消えていないこと
+    if (active && !s.episode) violations.push(`t=${t}: 挿話が黙って消えた`);
+  }
+  return { started, ended, violations, state: s };
 }
 
 describe("挿話は同時に高々1つ（仕様3章の原則）", () => {
-  it("走っている間は次を始めない", () => {
-    let s = createDirector(0);
-    const links = [link("a", "b"), link("c", "d")];
-    let started = 0;
-    for (let t = 0; t < 60_000; t += 100) {
-      const r = tickDirector(s, links, [], t, seq([0.5]));
-      s = r.state;
-      if (r.started) {
-        started++;
-        // 開始直後は必ず episode が入っている
-        expect(s.episode).not.toBeNull();
-      }
-      // どの時点でも episode は 0 か 1 個
-      expect(s.episode === null || typeof s.episode.kind === "string").toBe(true);
+  it("走っている最中に次の挿話が始まらない", () => {
+    const r = run([link("a", "b"), link("c", "d")], 120_000);
+    expect(r.violations).toEqual([]);
+    expect(r.started.length, "そもそも一度も始まっていない").toBeGreaterThan(3);
+  });
+
+  it("始まった挿話は必ず終わる（数が釣り合う）", () => {
+    const r = run([link("a", "b")], 120_000);
+    expect(r.ended.length).toBeGreaterThanOrEqual(r.started.length - 1);
+  });
+
+  it("挿話の再生時間が 2〜3 秒に収まる", () => {
+    const r = run([link("a", "b")], 120_000);
+    expect(r.ended.length, "一度も終わっていない").toBeGreaterThan(0);
+    for (const e of r.ended) {
+      const dur = e.at - e.startedAt;
+      expect(dur).toBeGreaterThanOrEqual(2000);
+      expect(dur).toBeLessThanOrEqual(EPISODE_MAX_MS + 50);
     }
-    expect(started).toBeGreaterThan(0);
   });
 
   it("挿話の間隔が 6〜14 秒に収まる", () => {
-    let s = createDirector(0);
-    const links = [link("a", "b")];
-    const starts: number[] = [];
-    for (let t = 0; t < 120_000; t += 50) {
-      const r = tickDirector(s, links, [], t, seq([0.5]));
-      s = r.state;
-      if (r.started) starts.push(t);
-    }
-    expect(starts.length).toBeGreaterThan(3);
-    for (let i = 1; i < starts.length; i++) {
-      const gap = starts[i] - starts[i - 1];
-      // 前の挿話の再生時間 + 間隔
-      expect(gap).toBeGreaterThanOrEqual(EPISODE_MIN_GAP_MS);
-      expect(gap).toBeLessThanOrEqual(EPISODE_MAX_GAP_MS + 4000);
+    const r = run([link("a", "b")], 180_000);
+    expect(r.started.length).toBeGreaterThan(3);
+    for (let i = 1; i < r.started.length; i++) {
+      const prevEnd = r.ended.find((e) => e.startedAt === r.started[i - 1].startedAt);
+      expect(prevEnd, "前の挿話の終わりが見つからない").toBeDefined();
+      const gap = r.started[i].at - prevEnd!.at;
+      expect(gap).toBeGreaterThanOrEqual(EPISODE_MIN_GAP_MS - 50);
+      expect(gap).toBeLessThanOrEqual(EPISODE_MAX_GAP_MS + 50);
     }
   });
 
   it("リンクが無ければ何も起きない", () => {
-    let s = createDirector(0);
-    for (let t = 0; t < 60_000; t += 100) {
-      const r = tickDirector(s, [], [], t, seq([0.5]));
-      s = r.state;
-      expect(r.started).toBeNull();
-    }
-  });
-
-  it("挿話は 2〜3 秒で終わる", () => {
-    let s = createDirector(0);
-    const links = [link("a", "b")];
-    let ep: { startedAt: number } | null = null;
-    for (let t = 0; t < 60_000; t += 50) {
-      const r = tickDirector(s, links, [], t, seq([0.5]));
-      s = r.state;
-      if (r.started) ep = r.started;
-      if (r.ended && ep) {
-        const dur = t - ep.startedAt;
-        expect(dur).toBeGreaterThanOrEqual(2000);
-        expect(dur).toBeLessThanOrEqual(3500);
-        break;
-      }
-    }
+    const r = run([], 120_000);
+    expect(r.started).toEqual([]);
   });
 });
 
 describe("greeting の割り込み（仕様5.4）", () => {
   it("新しいリンクができたら即座に挨拶する", () => {
-    let s = createDirector(0);
-    const links = [link("a", "b")];
-    const r = tickDirector(s, links, [pairKey("a", "b")], 100, seq([0.5]));
+    const s = createDirector(0);
+    const r = tickDirector(s, [link("a", "b")], [pairKey("a", "b")],
+                           NO_PERSONALITY, 100, evenRnd());
     expect(r.started?.kind).toBe("greeting");
   });
 
-  it("走っている挿話を打ち切って割り込む", () => {
-    let s = createDirector(0);
+  it("走っている挿話を打ち切り、打ち切ったことを報告する", () => {
+    const rnd = evenRnd();
     const links = [link("a", "b"), link("c", "d")];
-    // まず普通の挿話を走らせる
-    for (let t = 0; t < 60_000; t += 50) {
-      const r = tickDirector(s, links, [], t, seq([0.5]));
+    let s = createDirector(0);
+    for (let t = 0; t <= 120_000; t += 50) {
+      const r = tickDirector(s, links, [], NO_PERSONALITY, t, rnd);
       s = r.state;
       if (r.started && r.started.kind !== "greeting") {
-        const interrupt = tickDirector(s, links, [pairKey("c", "d")], t + 50, seq([0.5]));
-        expect(interrupt.ended, "打ち切られた挿話が報告されない").not.toBeNull();
-        expect(interrupt.started?.kind).toBe("greeting");
+        const cut = tickDirector(s, links, [pairKey("c", "d")],
+                                 NO_PERSONALITY, t + 50, rnd);
+        expect(cut.ended, "打ち切られた挿話が報告されない").not.toBeNull();
+        expect(cut.ended!.startedAt).toBe(r.started.startedAt);
+        expect(cut.started?.kind).toBe("greeting");
+        expect(cut.state.fading, "消えかけの挿話が保持されていない").not.toBeNull();
         return;
       }
     }
-    throw new Error("挿話が始まらなかった");
+    throw new Error("挿話が一度も始まらなかった");
+  });
+
+  it("打ち切られた側の姿勢が 300ms かけて中立へ戻る（飛ばない）", () => {
+    const cut: Episode = { kind: "look", a: "a", b: "b", startedAt: 0, durationMs: 2400 };
+    const state: DirectorState = {
+      episode: { kind: "greeting", a: "c", b: "d", startedAt: 1000, durationMs: 2000 },
+      fading: { episode: cut, until: 1000 + FADE_MS },
+      nextAt: 99_999,
+    };
+    const at0 = directorPose(state, "a", 1000);
+    const mid = directorPose(state, "a", 1000 + FADE_MS / 2);
+    const done = directorPose(state, "a", 1000 + FADE_MS);
+    // 中立へ単調に近づく
+    expect(Math.abs(mid.lookAt)).toBeLessThanOrEqual(Math.abs(at0.lookAt));
+    expect(Math.abs(done.lookAt)).toBeLessThanOrEqual(Math.abs(mid.lookAt));
+    expect(done.lookAt).toBeCloseTo(0, 3);
+    expect(done.tilt).toBeCloseTo(0, 3);
   });
 
   it("1回の配置確定で複数リンクができても挨拶は1本だけ", () => {
     const s = createDirector(0);
     const links = [link("a", "b", 1), link("a", "c", 2), link("b", "c", 0.5)];
     const created = [pairKey("a", "b"), pairKey("a", "c"), pairKey("b", "c")];
-    const r = tickDirector(s, links, created, 100, seq([0.5]));
+    const r = tickDirector(s, links, created, NO_PERSONALITY, 100, evenRnd());
     expect(r.started?.kind).toBe("greeting");
     // 最も affinity の高いリンクが選ばれる
     expect([r.started!.a, r.started!.b].sort()).toEqual(["a", "c"]);
@@ -1006,64 +1362,134 @@ describe("greeting の割り込み（仕様5.4）", () => {
   });
 });
 
-describe("対象の選ばれ方", () => {
-  it("親密度が高いリンクほど選ばれやすい", () => {
-    const links = [link("a", "b", 0.1), link("c", "d", 3.0)];
+describe("対象の選ばれ方は重み付き（最大値固定ではない）", () => {
+  it("両方のリンクが選ばれ、親密度の高いほうが多く選ばれる", () => {
     const counts: Record<string, number> = {};
-    for (let seed = 0; seed < 200; seed++) {
-      let s = createDirector(0);
-      const rnd = seq([(seed % 100) / 100, ((seed * 7) % 100) / 100]);
-      for (let t = 0; t < 30_000; t += 100) {
-        const r = tickDirector(s, links, [], t, rnd);
-        s = r.state;
-        if (r.started) {
-          const k = pairKey(r.started.a, r.started.b);
-          counts[k] = (counts[k] ?? 0) + 1;
-          break;
-        }
+    // 乱数の位相を変えて何度も回す
+    for (let phase = 0; phase < 120; phase++) {
+      const rnd = evenRnd(0.0731, phase / 120);
+      const r = run([link("a", "b", 1), link("c", "d", 3)], 40_000, { rnd });
+      for (const e of r.started) {
+        const k = pairKey(e.a, e.b);
+        counts[k] = (counts[k] ?? 0) + 1;
       }
     }
-    expect(counts[pairKey("c", "d")] ?? 0).toBeGreaterThan(counts[pairKey("a", "b")] ?? 0);
+    const low = counts[pairKey("a", "b")] ?? 0;
+    const high = counts[pairKey("c", "d")] ?? 0;
+    expect(high, "高い方が選ばれていない").toBeGreaterThan(low);
+    // 常に最大値を選ぶ実装だと low が 0 になる。それはルーレットではない。
+    expect(low, "低い方が一度も選ばれていない（最大値固定になっている）").toBeGreaterThan(0);
+  });
+
+  it("配列の順序を変えても結果の傾向が変わらない", () => {
+    const tally = (links: NeighborLink[]) => {
+      const c: Record<string, number> = {};
+      for (let phase = 0; phase < 60; phase++) {
+        const r = run(links, 40_000, { rnd: evenRnd(0.0731, phase / 60) });
+        for (const e of r.started) {
+          const k = pairKey(e.a, e.b);
+          c[k] = (c[k] ?? 0) + 1;
+        }
+      }
+      return c;
+    };
+    const forward = tally([link("a", "b", 1), link("c", "d", 3)]);
+    const reversed = tally([link("c", "d", 3), link("a", "b", 1)]);
+    for (const k of [pairKey("a", "b"), pairKey("c", "d")]) {
+      const f = forward[k] ?? 0;
+      const rv = reversed[k] ?? 0;
+      const ratio = Math.max(f, rv) / Math.max(1, Math.min(f, rv));
+      expect(ratio, `${k} が配列の順序に依存している`).toBeLessThan(2);
+    }
   });
 });
 
-describe("episodePose", () => {
-  it("関与していない個体には何も返さない（中立）", () => {
-    const ep = { kind: "look" as const, a: "a", b: "b", startedAt: 0, durationMs: 2400 };
-    const p = episodePose(ep, "z", 1000);
-    expect(p).toEqual({ lookAt: 0, hop: 0, eyeOpen: 1, tilt: 0 });
+describe("性格が挿話の種類に効く（affinity には混ぜない）", () => {
+  it("眠い子のリンクでは sleepTogether が起きやすい", () => {
+    const links = [link("a", "b", 1)];
+    const countKind = (sleepiness: number) => {
+      let n = 0;
+      for (let phase = 0; phase < 60; phase++) {
+        const r = run(links, 60_000, {
+          rnd: evenRnd(0.0731, phase / 60),
+          personalities: { a: { sleepiness }, b: { sleepiness } },
+        });
+        n += r.started.filter((e) => e.kind === "sleepTogether").length;
+      }
+      return n;
+    };
+    expect(countKind(1)).toBeGreaterThan(countKind(0));
+  });
+
+  it("眠さはリンクの選ばれやすさを変えない", () => {
+    const links = [link("a", "b", 1), link("c", "d", 1)];
+    const share = (sleepiness: number) => {
+      let ab = 0;
+      let total = 0;
+      for (let phase = 0; phase < 60; phase++) {
+        const r = run(links, 40_000, {
+          rnd: evenRnd(0.0731, phase / 60),
+          personalities: { a: { sleepiness }, b: { sleepiness } },
+        });
+        for (const e of r.started) {
+          total++;
+          if (pairKey(e.a, e.b) === pairKey("a", "b")) ab++;
+        }
+      }
+      return total === 0 ? 0 : ab / total;
+    };
+    // 眠さを変えても a-b が選ばれる割合はほぼ変わらないこと
+    expect(Math.abs(share(1) - share(0))).toBeLessThan(0.15);
+  });
+});
+
+describe("directorPose", () => {
+  const ep = (kind: Episode["kind"]): DirectorState => ({
+    episode: { kind, a: "a", b: "b", startedAt: 0, durationMs: 2400 },
+    fading: null,
+    nextAt: 99_999,
+  });
+
+  it("関与していない個体は中立のまま", () => {
+    expect(directorPose(ep("look"), "z", 1000)).toEqual({
+      lookAt: 0, hop: 0, eyeOpen: 1, tilt: 0,
+    });
   });
 
   it("look では片方が先に、もう片方が遅れて見る", () => {
-    const ep = { kind: "look" as const, a: "a", b: "b", startedAt: 0, durationMs: 2400 };
     const early = 300;
-    expect(Math.abs(episodePose(ep, "a", early).lookAt)).toBeGreaterThan(
-      Math.abs(episodePose(ep, "b", early).lookAt)
+    expect(Math.abs(directorPose(ep("look"), "a", early).lookAt)).toBeGreaterThan(
+      Math.abs(directorPose(ep("look"), "b", early).lookAt)
     );
   });
 
+  it("sameDirection では2匹が同じ向きを見る", () => {
+    const t = 1200;
+    const a = directorPose(ep("sameDirection"), "a", t).lookAt;
+    const b = directorPose(ep("sameDirection"), "b", t).lookAt;
+    expect(Math.sign(a)).toBe(Math.sign(b));
+    expect(Math.abs(a)).toBeGreaterThan(0.1);
+  });
+
   it("sleepTogether では目が細くなる", () => {
-    const ep = { kind: "sleepTogether" as const, a: "a", b: "b", startedAt: 0, durationMs: 2800 };
-    expect(episodePose(ep, "a", 1400).eyeOpen).toBeLessThan(1);
+    expect(directorPose(ep("sleepTogether"), "a", 1400).eyeOpen).toBeLessThan(1);
   });
 
   it("終了時刻には中立に戻っている", () => {
     for (const kind of ["look", "sameDirection", "sleepTogether", "greeting"] as const) {
-      const ep = { kind, a: "a", b: "b", startedAt: 0, durationMs: 2400 };
-      const end = episodePose(ep, "a", 2400);
-      expect(end.lookAt).toBeCloseTo(0, 2);
-      expect(end.hop).toBeCloseTo(0, 2);
-      expect(end.tilt).toBeCloseTo(0, 2);
-      expect(end.eyeOpen).toBeCloseTo(1, 2);
+      const p = directorPose(ep(kind), "a", 2400);
+      expect(p.lookAt).toBeCloseTo(0, 2);
+      expect(p.hop).toBeCloseTo(0, 2);
+      expect(p.tilt).toBeCloseTo(0, 2);
+      expect(p.eyeOpen).toBeCloseTo(1, 2);
     }
   });
 
   it("どの時刻でも有限の値を返す", () => {
     for (const kind of ["look", "sameDirection", "sleepTogether", "greeting"] as const) {
-      const ep = { kind, a: "a", b: "b", startedAt: 0, durationMs: 2400 };
       for (const t of [-100, 0, 500, 2400, 100_000]) {
         for (const who of ["a", "b"]) {
-          const p = episodePose(ep, who, t);
+          const p = directorPose(ep(kind), who, t);
           for (const [k, v] of Object.entries(p)) {
             expect(Number.isFinite(v), `${kind} ${who}@${t} ${k}`).toBe(true);
           }
@@ -1083,18 +1509,29 @@ Expected: FAIL — `Failed to resolve import "./shelfDirector"`
 
 純粋関数。乱数は引数で受け取り、テストから固定できるようにする。
 
-- `tickDirector` は現在の挿話が終わっていれば `ended` を返し、
-  `now >= nextAt` かつリンクがあれば新しい挿話を始める
-- `created` が空でなければ、走っている挿話を打ち切って `greeting` を始める。
-  対象は `created` の中で最も `affinity` の高いリンク1本だけ
-- 対象の選択は `affinity` を重みとしたルーレット
-- `sleepTogether` は `sleepiness` が高い個体を含むリンクで選ばれやすくする
-  （`personalitySeed` は呼び出し側で `affinity` に混ぜて渡す）
+`tickDirector` の流れ:
+
+1. `fading` が期限切れなら消す
+2. `created` が空でなければ、その中で最も `affinity` の高いリンク1本で
+   `greeting` を始める。走っている挿話があれば `fading` へ移して `ended` で報告する
+3. 走っている挿話が `startedAt + durationMs` を過ぎたら終了し、
+   `nextAt = now + 6000..14000` を決める
+4. 挿話が無く `now >= nextAt` かつリンクがあれば、
+   `affinity` を重みとしたルーレットでリンクを1本選び、挿話の種類を決める
+
+**種類の選び方**: `sleepTogether` の重みは両端の `sleepiness` の平均に比例させる。
+`look` / `sameDirection` は一定。`affinity` には触らない。
+
+**ルーレットは最大値固定にしない。** 累積和を作って乱数で切る。
+テストが「低い方も選ばれること」を要求している。
+
+`directorPose` は `episode` と `fading` を合成する。
+`fading` は残り時間の比率で 0 へ向かって減衰させる。
 
 - [ ] **Step 4: テストを実行して通ることを確認する**
 
 Run: `npm test`
-Expected: PASS — shelfDirector 13件を含む全件
+Expected: PASS — shelfDirector 18件を含む全件
 
 - [ ] **Step 5: コミット**
 
@@ -1118,7 +1555,10 @@ git commit -m "feat: 棚の関係演出の指揮"
   - `store.setNeighborSince(map: Record<string, number>): void`
   - `useAmbientLife(registry, targets, enabled, links, episode)` — 引数を拡張
 
-- [ ] **Step 1: 個体差の失敗するテストを追記する**
+（個体差 `leanPreference` / `sleepiness` / `socialDistance` の追加は
+Task 4 で済ませてある。ここでは棚への組み込みだけを行う。）
+
+- [ ] **Step 1: 個体差が Task 4 で入っていることを確認する**
 
 `src/render/pose.test.ts`:
 
@@ -1169,6 +1609,8 @@ Expected: FAIL — `leanPreference` が undefined
 - **ドラッグ中は再計算しない**（仕様 5.7）
 - rAF ループの中で `tickDirector` を回す。**これも React の state を毎フレーム
   更新しない**。挿話が始まった／終わったときだけ `setState` する
+- `tickDirector` には `personalities`（`instanceId` → `{ sleepiness }`）を渡す。
+  `individuality(personalitySeed)` から作り、個体の集合が変わったときだけ作り直す
 - `neighbor_created` / `neighbor_removed` / `relationship_reaction` をログ
 - 棚の滞在が 10 秒・30 秒を超えたら `shelf_idle_10s` / `shelf_idle_30s` をログ
 
@@ -1518,17 +1960,19 @@ git commit -m "feat: クレーンのReaction Director"
 - Modify: `README.md`
 - Test: `src/dev/devActions.test.ts`（追記）
 
-- [ ] **Step 1: ログイベントを足す**
+- [ ] **Step 1: ログの meta を確認する**
 
-`LogEventType` に追加する。
+イベントの**型と許可リストは Task 1 の Step 0 で追加済み**。
+ここでは meta の中身が揃っていることだけ確認する。
 
-```
-plush_profile_opened / plush_drag_start / plush_drag_end
-neighbor_created / neighbor_removed / relationship_reaction
-shelf_idle_10s / shelf_idle_30s / shelf_return_after_win
-```
+| イベント | meta |
+|---|---|
+| `relationship_reaction` | `source` / `target` / `reactionType` |
+| `neighbor_created` / `neighbor_removed` | `sameType` |
+| `plush_drag_end` | `fromRow` / `toRow` / `reverted` |
+| `plush_profile_opened` | `plushTypeId` / `origin` |
 
-`relationship_reaction` の meta に `source` / `target` / `reactionType`。
+足りないものがあればここで足す。
 
 - [ ] **Step 2: サマリに依頼書22章の A〜F を足す**
 
@@ -1691,12 +2135,40 @@ git commit -m "feat: ログ追加・E2E測定・実プレイ評価"
 
 「TBD」「後で実装」「適切に処理」の類は無い。すべてのテストに実コードを書いた。
 
+**2.5 Codex レビュー②で直した点**
+
+| 指摘 | 対応 |
+|---|---|
+| `winOnAttempt` の距離が1回ずれる（`30n+4` だと n=2 が1回目で取れる） | 定数から導く式に変更。実際に何回目で取れたかを assert |
+| フィクスチャ ID `"p1"` と `split("#")[0]` が矛盾 | **ID から種類を復元する設計自体をやめる**。物理が `fallen` で種類も運ぶ |
+| ログイベント型を Task 10 で足すが Task 2〜7 が先に使う | Task 1 Step 0 へ前倒し。型と許可リストのずれを防ぐ回帰テストも追加 |
+| `sleepiness` が Task 6 だが Task 5 が使う | Task 4 へ前倒し。`personalities` を別引数で渡す（`affinity` に混ぜない） |
+| 全域 `defId → plushTypeId` 置換が物理と盤面保存を壊す | 触らないものを表で明示。`grep` での洗い出し手順を追加 |
+| 同座標 12 匹で 66 リンクになり「最大24本」の主張が崩れる | 隣接を**トポロジカル**に定義（左右上下でいちばん近い1匹） |
+| 「同時に高々1つ」のテストがトートロジー | 挿話をテスト側で追跡し、走行中の開始を違反として記録 |
+| 「2〜3秒で終わる」テストが終了しなくても通る | 終了が一度も無ければ落ちるよう assert |
+| ルーレットのテストが「最大値固定」でも通る | 低い方も選ばれることを要求。配列順序への非依存も検証 |
+| 中断時の 300ms 復帰が状態として表現できない | `DirectorState.fading` を追加し、`directorPose` が合成 |
+| `commitWin` の順序（保存 → 盤面破棄）が保証されない | `commitWin` に閉じ込め、順序をテスト |
+| `NEIGHBOR_DISTANCE` と `NEIGHBOR_LINK_DISTANCE` の名前不一致 | 仕様側を実装名に合わせた |
+
+**却下した指摘**
+
+- 「Task 1 を分割し一時的な互換エイリアスを置く」
+  → 却下。半分だけ移行した状態はレビューも実行も難しく、
+    エイリアスの削除漏れが残る。Task 1 は不可分のまま、
+    代わりに対象ファイルの洗い出し手順と「触らないもの」を明示した。
+
 **3. 型の一貫性**
 
 - `PlushInstance` — Task 1 で定義、以降すべてで使用。フィールド名一致
 - `NeighborLink` — Task 4 で定義、Task 5・6 で使用。`affinity` を含む形で一致
 - `Episode` / `EpisodeKind` — Task 5 で定義、Task 6 で使用
-- `resolveWin` — Task 2 で定義、Task 2 の Step 4 で使用
+- `resolveWin` / `commitWin` / `FallenPrize` — Task 2 で定義・使用
+- `StepResult.fallen` — Task 2 で `string[]` から `FallenPrize[]` へ変更。
+  既存テストの `.toContain("a")` を `.map(f => f.id)` 経由に直す
+- `Personality` / `DirectorState.fading` — Task 5 で定義、Task 6 で使用
+- `individuality().sleepiness` — Task 4 で追加、Task 5 のテストと Task 6 で使用
 - `CraneSignal` / `SIGNAL_PRIORITY` — Task 9 で定義・使用
 - `pairKey` — Task 4 で定義、Task 5 のテストで使用。インポート元が一致
 - `landingRowFor` / `DRAG_LIFT_PX` — Task 7 で定義・使用
