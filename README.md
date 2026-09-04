@@ -25,6 +25,17 @@ npm run build   # 本番ビルド
 npm run typecheck
 ```
 
+## 公開先
+
+https://erinduxiao.github.io/NuiProto/
+
+`master` に push すると GitHub Actions が型チェック・テスト・ビルドを通し、
+`dist` を `gh-pages` ブランチへ publish する（`.github/workflows/deploy.yml`）。
+
+リポジトリ設定の **Settings > Pages > Source** を
+「Deploy from a branch」→ `gh-pages` / `(root)` にしておくこと。
+この設定だけはワークフローから行えない。
+
 ## 遊びかた
 
 1. 起動すると、部屋にぬいぐるみが1匹います。触ると反応します
