@@ -32,9 +32,11 @@ https://erinduxiao.github.io/NuiProto/
 `master` に push すると GitHub Actions が型チェック・テスト・ビルドを通し、
 `dist` を `gh-pages` ブランチへ publish する（`.github/workflows/deploy.yml`）。
 
-リポジトリ設定の **Settings > Pages > Source** を
-「Deploy from a branch」→ `gh-pages` / `(root)` にしておくこと。
-この設定だけはワークフローから行えない。
+`gh-pages` は生成物専用のブランチなので手で触らない。次の実行で上書きされる。
+
+リポジトリ設定の **Settings > Pages > Source** は
+「Deploy from a branch」→ `gh-pages` / `(root)` にしてある。
+この設定だけはワークフローから変更できない。
 
 ## 遊びかた
 

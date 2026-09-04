@@ -33,6 +33,21 @@
   作業ブランチは削除済み
 - 未コミットの変更なし
 
+### 公開とデプロイ
+
+- リモートは `https://github.com/ErinDuXiao/NuiProto`（2026-09-04 に接続）
+- 公開先は **https://erinduxiao.github.io/NuiProto/**
+- `master` へ push すると `.github/workflows/deploy.yml` が
+  型チェック → テスト → ビルド → `dist` を `gh-pages` ブランチへ force push する。
+  `gh-pages` は生成物専用。手で触らない
+- **`gh-pages` は編集しない。** 次の CI 実行で丸ごと上書きされる
+- Pages の Source は Settings 側で `gh-pages` / `(root)` に設定済み。
+  この設定だけはワークフローから変更できない
+- Pages API を使う `configure-pages` / `deploy-pages` 方式は
+  `GITHUB_TOKEN` の権限で弾かれたため採用していない。戻さないこと
+- `vite.config.ts` の `base` は**ビルド時だけ** `/NuiProto/`。
+  リポジトリ名を変えたらここも変える。開発サーバーはルート配信のまま
+
 ---
 
 ## 読む順番
