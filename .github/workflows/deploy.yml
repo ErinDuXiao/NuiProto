@@ -34,10 +34,11 @@ jobs:
       - run: npm test
       - run: npm run build
 
+      # Pages はリポジトリ設定側で有効にしておくこと。
+      # Settings > Pages > Build and deployment > Source: GitHub Actions
+      # ワークフローから enablement: true で有効化する方法は、
+      # GITHUB_TOKEN の権限では通らなかったため使わない。
       - uses: actions/configure-pages@v5
-        with:
-          # リポジトリ設定で Pages を有効にしていなくても、この指定で有効化される
-          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
