@@ -78,8 +78,14 @@ FPS表示 / 物理デバッグ表示。
 `weight` と `softness` のレンジは必ず守ってください。この範囲が
 クレーンの難易度設計（個体差を 1.8 倍幅に抑える）の前提になっています。
 
+## 再開するとき
+
+作業を引き継ぐ・久しぶりに戻る場合は [docs/HANDOFF.md](docs/HANDOFF.md) から。
+いまどこまで進んでいるか、次に何をするか、踏んではいけない地雷が書いてあります。
+
 ## 設計
 
+- 引き継ぎ: [docs/HANDOFF.md](docs/HANDOFF.md)
 - 設計書: [docs/superpowers/specs/2026-09-03-plush-crane-mvp-design.md](docs/superpowers/specs/2026-09-03-plush-crane-mvp-design.md)
 - 実装計画: [docs/superpowers/plans/2026-09-03-plush-crane-mvp.md](docs/superpowers/plans/2026-09-03-plush-crane-mvp.md)
 - 実プレイ評価: [docs/playtest-report.md](docs/playtest-report.md)
