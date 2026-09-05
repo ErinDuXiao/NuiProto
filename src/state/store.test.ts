@@ -284,3 +284,35 @@ describe("store / 起動時の移行と保存の成否", () => {
     expect(fresh.isPersisted()).toBe(true);
   });
 });
+
+describe("setNeighborSince", () => {
+  it("隣になった時刻を保存する", () => {
+    store.setNeighborSince({ "a|b": 1234 });
+    expect(store.get().neighborSince).toEqual({ "a|b": 1234 });
+  });
+
+  it("内容が同じなら状態を作り直さない（writeSave を連打しない）", () => {
+    store.setNeighborSince({ "a|b": 1234 });
+    const before = store.get();
+    store.setNeighborSince({ "a|b": 1234 });
+    expect(store.get()).toBe(before);
+  });
+
+  it("キーが減れば書き換わる", () => {
+    store.setNeighborSince({ "a|b": 1234, "b|c": 9 });
+    store.setNeighborSince({ "a|b": 1234 });
+    expect(store.get().neighborSince).toEqual({ "a|b": 1234 });
+  });
+
+  it("非有限な値は捨てる", () => {
+    store.setNeighborSince({ "a|b": Number.NaN, "b|c": 5 });
+    expect(store.get().neighborSince).toEqual({ "b|c": 5 });
+  });
+
+  it("渡した表を後から書き換えても保存済みの状態は変わらない", () => {
+    const map: Record<string, number> = { "a|b": 1 };
+    store.setNeighborSince(map);
+    map["a|b"] = 999;
+    expect(store.get().neighborSince).toEqual({ "a|b": 1 });
+  });
+});

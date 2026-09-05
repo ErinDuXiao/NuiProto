@@ -2,10 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getPlush } from "../data/plushies";
 import { pickLine } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
-import { NEUTRAL_POSE, plushTop, type Pose } from "../render/pose";
-import { useAmbientLife, type AmbientTarget } from "../render/useAmbientLife";
+import { individuality, NEUTRAL_POSE, plushTop, type Pose } from "../render/pose";
+import {
+  useAmbientLife,
+  type AmbientTarget,
+  type ShelfRelations,
+} from "../render/useAmbientLife";
 import { sfx } from "../audio/sfx";
 import { store, useGame } from "../state/store";
+import { computeNeighbors } from "./neighbors";
+import { createDirector, type Episode, type Personality } from "./shelfDirector";
 import { SHELF, rowY } from "./shelfLayout";
 import { useDragPlacement } from "./useDragPlacement";
 import { useCeremony, CeremonyActors, CeremonyOverlay } from "./MeetingCeremony";
@@ -19,6 +25,30 @@ type Props = {
 };
 
 type Bubble = { instanceId: string; text: string; until: number };
+
+/**
+ * 隣接を計算し直す間隔 (ms)。
+ *
+ * 配置が確定したときだけでは `togetherMs` が伸びない。仕様5.7 の
+ * 「しばらくすると寄りかかりが強くなる（togetherMs が伸びる）」は
+ * 眺めている最中に起きなければ意味がないので、位置が変わらなくても
+ * 低頻度で計算し直す。`computeNeighbors` は純粋で、位置が同じなら
+ * リンクの構成も `neighborSince` も変わらない（`store.setNeighborSince`
+ * は同じ内容なら書き込まない）。伸びるのは `togetherMs` だけ。
+ */
+const NEIGHBOR_REFRESH_MS = 5000;
+
+/**
+ * `relationship_reaction` をログに残す最短間隔 (ms)。
+ *
+ * 挿話は 6〜14 秒ごとに起きる。全部記録すると 2000 件のリングバッファが
+ * 数時間で埋まって他の出来事を押し出し、記録のたびに writeSave が走る。
+ * 「関係の演出が実際に起きているか」を知るには 1 分に 1 件で足りる。
+ */
+const REACTION_LOG_GAP_MS = 60_000;
+
+/** 何も操作せずに眺めていられた時間の観測点 (ms)。仕様5.8。 */
+const IDLE_MARKS = [10_000, 30_000] as const;
 
 /**
  * 棚画面 = ぬいぐるみたちが暮らしている小さな部屋。
@@ -46,6 +76,32 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
   const [ringId, setRingId] = useState<string | null>(null);
   /** タップ中の子。プロフィールカードを出す対象（仕様4.6: リアクションと同時に開く） */
   const [profileId, setProfileId] = useState<string | null>(null);
+
+  /**
+   * 棚の関係。**React の state ではない。**
+   *
+   * リンクも指揮の状態も毎フレーム参照されるが、毎フレーム再レンダーを
+   * 起こしてはならない（Global Constraint）。ここに置いて rAF から
+   * 直接読み書きし、React へは挿話の開始・終了の瞬間だけ知らせる。
+   */
+  const relationsRef = useRef<ShelfRelations>({
+    links: [],
+    revision: 0,
+    personalities: {},
+    created: [],
+    // 指揮の時刻軸は rAF のタイムスタンプ（performance.now）と同じでなければ
+    // ならない。Date.now を混ぜると nextAt が 50 年先になる。
+    director: createDirector(typeof performance !== "undefined" ? performance.now() : 0),
+    onTransition: () => {},
+  });
+  /** 起動直後の1回目の隣接計算か。復元と配置確定を区別する（仕様5.4） */
+  const firstNeighborPassRef = useRef(true);
+  /** ドラッグ中か。コールバックを作り直さずに読む */
+  const draggingRef = useRef(false);
+  /** 直近で relationship_reaction を記録した時刻 */
+  const lastReactionLogRef = useRef(0);
+  /** 「何も操作していない時間」を測り直す。操作のたびに呼ぶ */
+  const idleResetRef = useRef<() => void>(() => {});
 
   useEffect(
     () => () => {
@@ -84,16 +140,103 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
     [onShelf]
   );
 
+  /**
+   * 挿話の種類選びに使う性格（仕様5.6）。個体の集合が変わったときだけ作り直す。
+   *
+   * `game.instances` の参照はログ書き込みでは変わらないので、
+   * ここが再計算されるのは実際に個体が増減・移動したときだけ。
+   */
+  const personalities = useMemo(() => {
+    const map: Record<string, Personality> = {};
+    for (const o of onShelf) {
+      map[o.instanceId] = { sleepiness: individuality(o.personalitySeed).sleepiness };
+    }
+    return map;
+  }, [onShelf]);
+
+  /**
+   * 挿話の開始・終了。**ここだけが rAF から React に届く経路**であり、
+   * 毎フレームではなく遷移の瞬間にしか呼ばれない。
+   */
+  const onTransition = useCallback((started: Episode | null) => {
+    if (!started) return;
+    const now = Date.now();
+    if (now - lastReactionLogRef.current < REACTION_LOG_GAP_MS) return;
+    lastReactionLogRef.current = now;
+    store.log("relationship_reaction", { meta: { kind: started.kind } });
+  }, []);
+
+  // ref の中身をレンダー中に差し替える。instancesRef と同じ扱い。
+  relationsRef.current.personalities = personalities;
+  relationsRef.current.onTransition = onTransition;
+
   const { onPointerDown, drag } = useDragPlacement({
     instances: game.instances,
     svgRef,
     enabled: !ceremony.active,
     onTap: (instanceId) => touchRef.current(instanceId),
   });
+  draggingRef.current = drag !== null;
+
+  /**
+   * 隣接を計算し直す（仕様5.7）。
+   *
+   * **ドラッグ中は決して呼ばない。** ポインタの移動ごとに再計算すると
+   * writeSave が毎フレーム走り、リンクの生成と消滅が連打される。
+   */
+  const recomputeNeighbors = useCallback(() => {
+    if (draggingRef.current || ceremonyActiveRef.current) return;
+    const rel = relationsRef.current;
+    const res = computeNeighbors(
+      instancesRef.current,
+      rel.links,
+      store.get().neighborSince,
+      Date.now()
+    );
+    rel.links = res.links;
+    rel.revision += 1;
+    store.setNeighborSince(res.neighborSince);
+
+    if (firstNeighborPassRef.current) {
+      // 起動直後の1回目は「保存されていた関係の復元」であって、
+      // いま起きた変化ではない。仕様5.4:「起動直後や移行直後に大量の
+      // リンクが『新規』として検出される場合は挨拶しない」。
+      //
+      // removed も同じ理由で捨てる。前のセッションで箱へ戻した個体の
+      // キーが neighborSince に残っていると、ここで一度だけ removed に
+      // 現れる（Task 4 の申し送り）。それを「いま別れた」として記録すると、
+      // 何日も前の別れに今日の時刻が付く。傾きも、復元直後は
+      // 寄りかかっていないので戻すものがない。
+      firstNeighborPassRef.current = false;
+      return;
+    }
+
+    for (let i = 0; i < res.created.length; i++) store.log("neighbor_created");
+    for (let i = 0; i < res.removed.length; i++) store.log("neighbor_removed");
+
+    if (res.created.length > 0) {
+      // まだ消費されていない created が残っていることがある（演出中など）。
+      // 取りこぼさず、同じキーを二重に積まない。
+      const pending = new Set(rel.created);
+      for (const key of res.created) pending.add(key);
+      rel.created = [...pending];
+    }
+  }, []);
+
+  // 配置が確定したとき（= instances が変わったとき）とドラッグが終わったときに回す。
+  useEffect(() => {
+    recomputeNeighbors();
+  }, [game.instances, drag !== null, ceremony.active, recomputeNeighbors]);
+
+  // togetherMs を伸ばすためだけの低頻度の更新。React には触れない。
+  useEffect(() => {
+    const id = window.setInterval(recomputeNeighbors, NEIGHBOR_REFRESH_MS);
+    return () => window.clearInterval(id);
+  }, [recomputeNeighbors]);
 
   // 演出中・ドラッグ中は環境アニメーションを止める。
   // ambient が transform を書き換えると、掴んだ位置とずれてしまう。
-  useAmbientLife(refs, targets, !ceremony.active && drag === null);
+  useAmbientLife(refs, targets, !ceremony.active && drag === null, relationsRef);
 
   // 滞在時間を計る。「一覧として消費されている」か「眺めている」かを見分ける指標（仕様17.2）
   useEffect(() => {
@@ -101,6 +244,37 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
     const enteredAt = Date.now();
     return () => {
       store.log("shelf_dwell", { meta: { ms: Date.now() - enteredAt } });
+    };
+  }, []);
+
+  /**
+   * 何も操作せずに眺めていられた時間（仕様5.8）。
+   *
+   * 「滞在時間」ではなく「無操作で続いた時間」を測る。触ったら測り直す。
+   * 記録は 1 回の滞在につき各 1 件まで — 眺め続けている人ほどログが
+   * 増えるのでは、リングバッファを押し流すだけで何も分からない。
+   */
+  useEffect(() => {
+    const timers: number[] = [];
+    const fired = new Set<number>();
+    const arm = () => {
+      for (const t of timers) window.clearTimeout(t);
+      timers.length = 0;
+      for (const ms of IDLE_MARKS) {
+        if (fired.has(ms)) continue;
+        timers.push(
+          window.setTimeout(() => {
+            fired.add(ms);
+            store.log(ms === 10_000 ? "shelf_idle_10s" : "shelf_idle_30s");
+          }, ms)
+        );
+      }
+    };
+    idleResetRef.current = arm;
+    arm();
+    return () => {
+      for (const t of timers) window.clearTimeout(t);
+      idleResetRef.current = () => {};
     };
   }, []);
 
@@ -188,7 +362,11 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
                   else refs.current.delete(o.instanceId);
                 }}
                 transform={`translate(${x} 0)`}
-                onPointerDown={(e) => onPointerDown(o.instanceId, e)}
+                onPointerDown={(e) => {
+                  // 触った時点で「何も操作していない時間」は途切れる（仕様5.8）
+                  idleResetRef.current();
+                  onPointerDown(o.instanceId, e);
+                }}
                 style={{ cursor: dragging ? "grabbing" : "grab" }}
               >
                 <PlushSVG def={def} pose={pose} seed={o.personalitySeed} />

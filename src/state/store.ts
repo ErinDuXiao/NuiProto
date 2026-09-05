@@ -242,6 +242,34 @@ export const store = {
     });
   },
 
+  /**
+   * 隣接ペアが隣になった時刻の表を差し替える（仕様5.2）。
+   *
+   * **内容が同じなら何もしない。** `set` は書き込みのたびに `writeSave` を
+   * 呼ぶので、棚が定期的に隣接を計算し直すたびに無条件で書くと
+   * localStorage への書き込みが連打される（仕様5.7 が禁じているのは
+   * ドラッグ中の連打だが、理由は同じ）。隣接の「開始時刻」は誰かが
+   * 動かされない限り変わらないので、ほとんどの呼び出しはここで止まる。
+   *
+   * 渡された表はコピーして持つ。呼び出し側が同じオブジェクトを
+   * 使い回しても、保存済みの状態が後から書き換わらないようにする。
+   */
+  setNeighborSince(map: Record<string, number>): void {
+    set((s) => {
+      const next: Record<string, number> = {};
+      for (const [k, v] of Object.entries(map ?? {})) {
+        if (typeof v === "number" && Number.isFinite(v)) next[k] = v;
+      }
+      const prev = s.neighborSince;
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(next);
+      if (prevKeys.length === nextKeys.length && nextKeys.every((k) => prev[k] === next[k])) {
+        return s;
+      }
+      return { ...s, neighborSince: next };
+    });
+  },
+
   saveBoard(board: CraneBoardSave | null): void {
     set((s) => ({ ...s, craneBoard: board }));
   },
