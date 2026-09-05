@@ -3,7 +3,8 @@ import {
   createCrane, startDrop, tickCrane, resolveWin, MIN_ADVANCE,
 } from "./craneMachine";
 // commitWin だけ別ファイル。craneMachine を store から独立させておくため
-import { commitWin } from "./commitWin";
+import { canSaveBoard, commitWin } from "./commitWin";
+import { boardToSave, makeBoard } from "./board";
 import { step, DEFAULT_PIT, STEP, atRest, type Body, type FallenPrize } from "./physics";
 import { getPlush } from "../data/plushies";
 import { store } from "../state/store";
@@ -57,6 +58,15 @@ function winOnAttempt(n: number) {
     if (won) return { crane: c, won, attempt: i };
   }
   throw new Error(`${n} 回で獲得できなかった（開始距離 ${dist}）`);
+}
+
+/** 決定論的な擬似乱数。盤面を毎回同じにする。 */
+function seeded(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
 }
 
 beforeEach(() => {
@@ -154,5 +164,57 @@ describe("commitWin の順序", () => {
     expect(
       store.get().instances.find((i) => i.instanceId === id)!.attemptsToAcquire
     ).toBe(3);
+  });
+});
+
+describe("獲得したあとの盤面", () => {
+  /**
+   * 獲得しても画面はすぐには閉じない（棚へ帰るまで 1.5 秒の余韻がある）。
+   * その間もループは回り、盤面が静止していれば保存判定を通る。
+   *
+   * commitWin が捨てた盤面をそこで書き戻すと、次に入ったときに
+   * attemptsOnBoard を引き継いでしまい、**次の子の来歴が狂う。**
+   * 「3回目で取れた」はずの子が「5回目で取れた」ことになる。
+   */
+  it("獲得後にループが回り続けても、捨てた盤面が書き戻らない", () => {
+    // 本番と同じ makeBoard の盤面。獲得後も賑やかしの景品が残る
+    const bodies = makeBoard(DEFAULT_PIT, seeded(7));
+    const crane = createCrane();
+    let won: FallenPrize | null = null;
+    let attempt = 0;
+    while (!won && attempt < 4) {
+      attempt++;
+      const lead = bodies.find((b) => b.id === "rabbit_01#0")!;
+      won = runAttempt(crane, bodies, lead.x, lead.z);
+    }
+    expect(won, "4回以内に取れなかった").not.toBeNull();
+    expect(
+      bodies.length,
+      "他の景品が残っていないと、この不具合は再現しない"
+    ).toBeGreaterThan(0);
+
+    commitWin(crane, won!, null);
+    expect(store.get().craneBoard).toBeNull();
+
+    // 余韻のあいだのループを再現する（ArcadeScreen の rAF ループと同じ判定）
+    for (let i = 0; i < 90; i++) {
+      if (canSaveBoard(crane.state, atRest(bodies), bodies.length, true)) {
+        store.saveBoard(boardToSave(bodies, crane.attemptsOnBoard));
+      }
+    }
+
+    expect(
+      store.get().craneBoard,
+      "捨てた盤面が書き戻っている。次の子の試行回数が引き継がれる"
+    ).toBeNull();
+  });
+
+  it("まだ獲得していなければ、静止した盤面はちゃんと保存される", () => {
+    const bodies = makeBoard(DEFAULT_PIT, seeded(7));
+    const crane = createCrane();
+    crane.attemptsOnBoard = 2;
+    expect(canSaveBoard(crane.state, atRest(bodies), bodies.length, false)).toBe(true);
+    store.saveBoard(boardToSave(bodies, crane.attemptsOnBoard));
+    expect(store.get().craneBoard?.attemptsOnBoard).toBe(2);
   });
 });

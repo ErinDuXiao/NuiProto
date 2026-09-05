@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sfx } from "../audio/sfx";
 import { store, useGame } from "../state/store";
 import { boardToSave, makeBoard, restoreBoard } from "./board";
-import { commitWin } from "./commitWin";
+import { canSaveBoard, commitWin } from "./commitWin";
 import { CraneView, VIEW } from "./CraneView";
 import {
   createCrane,
@@ -132,9 +132,9 @@ export function ArcadeScreen({ onGoShelf, debugPhysics, showFps }: Props) {
       // 盤面が落ち着いたら保存し、すぐ次の狙いに入れるようにする。
       // idle のまま待たせると「方向ボタンを押すまで決定が効かない」状態になり、
       // 説明なしでは操作が分からなくなる（依頼書26章）。
-      if (crane.state === "idle" && atRest(bodies) && bodies.length > 0) {
+      if (canSaveBoard(crane.state, atRest(bodies), bodies.length, wonRef.current)) {
         maybeSave(bodies, crane);
-        if (!wonRef.current) crane.state = "aimX";
+        crane.state = "aimX";
       }
 
       // 気持ちの更新
