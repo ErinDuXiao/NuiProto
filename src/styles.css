@@ -336,6 +336,70 @@ button {
   gap: 10px;
 }
 
+/* ---------- プロフィールカード（仕様4.5） ---------- */
+
+/*
+ * .sheet を流用せず別クラスにする。プロフィールは「棚を眺めながら
+ * 思い出す」体験なので、背景の暗転は極力薄く、棚が透けて見える状態を保つ。
+ * .sheet の暗さ(0.35)のままだと、棚から気持ちが切れてステータス画面に見える。
+ */
+.profile-sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0 16px 22px;
+  background: rgba(60, 48, 38, 0.12);
+}
+
+.profile-card {
+  width: 100%;
+  max-width: 300px;
+  background: var(--card);
+  border-radius: 20px;
+  padding: 18px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  box-shadow: 0 6px 24px rgba(60, 48, 38, 0.18);
+}
+
+.profile-art {
+  overflow: visible;
+  margin-bottom: 2px;
+}
+
+.profile-name {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.profile-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+
+.profile-lines p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+  text-align: center;
+}
+
+.profile-series {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--ink-soft);
+}
+
 /* ---------- Developer Menu ---------- */
 
 .secret-dot {

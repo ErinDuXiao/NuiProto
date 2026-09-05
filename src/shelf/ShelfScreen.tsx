@@ -9,6 +9,7 @@ import { store, useGame } from "../state/store";
 import { SHELF, rowY } from "./shelfLayout";
 import { useDragPlacement } from "./useDragPlacement";
 import { useCeremony, CeremonyActors, CeremonyOverlay } from "./MeetingCeremony";
+import { PlushProfile } from "./PlushProfile";
 
 type Props = {
   onGoArcade: () => void;
@@ -43,6 +44,8 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
   const ringTimer = useRef(0);
   /** 迎えたばかりの子。少しの間だけ淡いリングを出す（仕様8章） */
   const [ringId, setRingId] = useState<string | null>(null);
+  /** タップ中の子。プロフィールカードを出す対象（仕様4.6: リアクションと同時に開く） */
+  const [profileId, setProfileId] = useState<string | null>(null);
 
   useEffect(
     () => () => {
@@ -128,6 +131,9 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
         },
       ]);
       setSquashed((s) => ({ ...s, [instanceId]: Date.now() }));
+      // リアクション（潰れ＋セリフ）とプロフィールは同時に起きる（仕様4.6）。
+      // どちらかを起こしてどちらかを起こさない、は「一連の動作」を壊す。
+      setProfileId(instanceId);
       const timer = window.setTimeout(() => {
         squashTimers.current.delete(timer);
         setSquashed((s) => {
@@ -216,6 +222,8 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
       </nav>
 
       <CeremonyOverlay ceremony={ceremony} />
+
+      {profileId && <PlushProfile instanceId={profileId} onClose={() => setProfileId(null)} />}
 
       {/* Developer Menu の入口。通常プレイヤーの目に触れない大きさにする */}
       <button className="secret-dot" aria-hidden="true" tabIndex={-1} onClick={onSecretTap} />
