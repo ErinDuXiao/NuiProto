@@ -31,11 +31,31 @@ function tick(t: number): void {
   frames = [];
   act(() => {
     for (const cb of queue) cb(t);
+    // ShelfScreen の onTransition は relationship_reaction の store.log を
+    // rAF コールバックの外（setTimeout(0)）へ追い出している（Task 6 のレビュー
+    // 指摘）。setTimeout は toFake に含めてあるので、ここで即座に進めておかないと
+    // この tick() の直後に来る `logsOf(...)` の同期チェックが軒並み空振りする。
+    vi.advanceTimersByTime(0);
   });
 }
 
 function logsOf(type: LogEventType): LogEvent[] {
   return store.get().log.filter((e) => e.type === type);
+}
+
+/**
+ * tick() は setTimeout(0) まで進めてしまうので、rAF コールバックが呼び出し元へ
+ * 戻った**直後**（＝ setTimeout(0) がまだ発火していない状態）を見たい
+ * Task 6 の証明用テストだけはこちらを使う。
+ */
+function rawTick(t: number): void {
+  clock = t;
+  vi.setSystemTime(EPOCH + t);
+  const queue = frames;
+  frames = [];
+  act(() => {
+    for (const cb of queue) cb(t);
+  });
 }
 
 function renderShelf() {
@@ -175,5 +195,65 @@ describe("ShelfScreen — relationship_reaction の記録間隔 (依頼書22章 
     }
     // 記録が 1 件も無ければ上の空白は空回りするので、本数も見る。
     expect(ts.length, "演出がほとんど記録されていない").toBeGreaterThan(3);
+  });
+});
+
+describe("ShelfScreen — relationship_reaction の store.log は rAF の外で走る (Task 6)", () => {
+  /**
+   * useAmbientLife の rAF コールバック（frame）は毎フレーム DOM 属性を
+   * 直接書き換えるだけで React に触れてはいけない（Global Constraint）。
+   * ところが挿話が始まった瞬間だけ ShelfScreen.onTransition が呼ばれ、
+   * そこから store.log（JSON.stringify 全体 + localStorage.setItem +
+   * 購読者通知＝再レンダー）が走っていた。しかも呼ばれるのは挿話が
+   * "始まった" まさにそのフレームで、記録の間引きを 60s→12s に縮めた分
+   * 5倍の頻度で起きるようになっていた。
+   *
+   * ここでは rAF コールバックが呼び出し元へ戻った直後の状態を直接見て、
+   * store.log がまだ走っていないこと（＝ rAF を塞いでいないこと）を確認する。
+   */
+  it("エピソード開始のフレーム内では store.log が同期的に走らない", () => {
+    store.winPlush({ plushTypeId: "bear_01", attemptsToAcquire: 3, witnessedBy: null });
+    renderShelf();
+    playCeremony();
+    expect(logsOf("neighbor_created"), "前提が崩れている").toHaveLength(1);
+
+    // rAF コールバックそのものを1回だけ手で呼ぶ。setTimeout はまだ進めない。
+    rawTick(clock + 100);
+
+    expect(
+      logsOf("relationship_reaction"),
+      "store.log が rAF コールバックの中で同期的に走っている"
+    ).toHaveLength(0);
+
+    // 次のマクロタスクまで進めると、追い出しておいた書き込みが届く。
+    act(() => {
+      vi.advanceTimersByTime(0);
+    });
+    expect(
+      logsOf("relationship_reaction"),
+      "遅延させた書き込みが結局どこにも届いていない"
+    ).toHaveLength(1);
+  });
+
+  it("setTimeout(0) が発火する前にアンマウントすると relationship_reaction は記録されない", () => {
+    // 追い出した書き込みがアンマウント後に発火して、古いクロージャの ref や
+    // 既に片付いたコンポーネントに触れないことを確認する（squashTimers と
+    // 同じ後始末の約束）。
+    store.winPlush({ plushTypeId: "bear_01", attemptsToAcquire: 3, witnessedBy: null });
+    renderShelf();
+    playCeremony();
+    expect(logsOf("neighbor_created"), "前提が崩れている").toHaveLength(1);
+
+    rawTick(clock + 100);
+    // まだ発火していないはず。ここでアンマウントして片付けを走らせる。
+    cleanup();
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(
+      logsOf("relationship_reaction"),
+      "アンマウント後に発火した書き込みが残っている"
+    ).toHaveLength(0);
   });
 });

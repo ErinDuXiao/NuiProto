@@ -87,6 +87,12 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
   /** アンマウント後に発火させないための後片付け */
   const squashTimers = useRef(new Set<number>());
   const ringTimer = useRef(0);
+  /**
+   * `relationship_reaction` の store.log を rAF の外へ追い出すための
+   * setTimeout(0) の受け皿。アンマウント後に発火して古いクロージャの
+   * ref/state を触らないよう、squashTimers と同じく明示的に片付ける。
+   */
+  const reactionLogTimers = useRef(new Set<number>());
   /** 迎えたばかりの子。少しの間だけ淡いリングを出す（仕様8章） */
   const [ringId, setRingId] = useState<string | null>(null);
   /** タップ中の子。プロフィールカードを出す対象（仕様4.6: リアクションと同時に開く） */
@@ -140,6 +146,8 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
       for (const t of squashTimers.current) window.clearTimeout(t);
       squashTimers.current.clear();
       window.clearTimeout(ringTimer.current);
+      for (const t of reactionLogTimers.current) window.clearTimeout(t);
+      reactionLogTimers.current.clear();
     },
     []
   );
@@ -196,13 +204,45 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
     // 端末の時刻設定やスリープ復帰で飛ぶことがあり、未来へ飛ぶと以後の演出が
     // 長時間まったく記録されなくなる。startedAt なら挿話の間隔と同じ物差しで
     // 「29 秒以内に必ず1件」を保証できる（REACTION_LOG_GAP_MS のコメント）。
+    //
+    // この判定と lastReactionLogRef の更新自体は同期のままでよい —
+    // ref の読み書きだけで store には触れないので rAF を止めない。
+    // 間引きの窓は startedAt（挿話の時計）だけで決まり、実際にログが
+    // 届くタイミングには依存しないので、下の書き込みを遅らせても
+    // 間引きはずれない。
     if (started.startedAt - lastReactionLogRef.current < REACTION_LOG_GAP_MS) return;
     lastReactionLogRef.current = started.startedAt;
     // meta は Task 10 の集計（依頼書22章 指標 D）が読む形にする。
     // `kind` だけでは誰と誰の反応か分からず、D も E も組み立てられない。
-    store.log("relationship_reaction", {
-      meta: { source: started.a, target: started.b, reactionType: started.kind },
-    });
+    const meta = { source: started.a, target: started.b, reactionType: started.kind };
+    /**
+     * store.log（→ store.ts の set）は保存全体（ログ最大2000件、約200〜400KB）を
+     * 同期的に JSON.stringify して localStorage.setItem し、購読者へ通知して
+     * このコンポーネントを再レンダーさせる。ここは useAmbientLife の rAF
+     * コールバックの中から呼ばれており、しかも呼ばれるのは挿話が"始まった"
+     * まさにそのフレーム — 見た目がいちばん動く瞬間に、その重い書き込みを
+     * DOM の transform 書き込みより**先に**乗せてしまう（Global Constraint
+     * 「棚の環境アニメーションは React 再レンダーを発生させない」への抵触一歩手前）。
+     *
+     * setTimeout(0) で今回の rAF タスクを完全に抜けたあとの次のマクロタスクへ
+     * 書き込みを追い出す。queueMicrotask では現在のタスク（rAF コールバック）
+     * を呼び出し元へ返したあと、ブラウザが描画に進む**前**にマイクロタスク
+     * キューが必ず空になるまで消化される。つまり重い書き込みは結局この
+     * フレームの描画の前に乗ってしまい、削りたい重さが削れない。
+     * setTimeout(0) ならこの1行で即座に返り、棚全体の transform 書き込みも
+     * ブラウザの描画も、この書き込みを一切待たずに済む。
+     *
+     * アンマウント後に発火しても構わない書き込みではあるが（store はコン
+     * ポーネントに属さないグローバルな状態で、古いクロージャの state /
+     * ref には一切触れない）、squashTimers と同じ流儀で片付けを揃えておく
+     * — 「張った setTimeout は必ず ref で追ってアンマウントで消す」という
+     * このファイルの既存の約束を崩さないため。
+     */
+    const timer = window.setTimeout(() => {
+      reactionLogTimers.current.delete(timer);
+      store.log("relationship_reaction", { meta });
+    }, 0);
+    reactionLogTimers.current.add(timer);
   }, []);
 
   // ref の中身をレンダー中に差し替える。instancesRef と同じ扱い。
