@@ -10,7 +10,7 @@ import {
 } from "../render/useAmbientLife";
 import { sfx } from "../audio/sfx";
 import { store, useGame } from "../state/store";
-import { computeNeighbors } from "./neighbors";
+import { computeNeighbors, pairKey } from "./neighbors";
 import { createDirector, type Episode, type Personality } from "./shelfDirector";
 import { SHELF, rowY } from "./shelfLayout";
 import { useDragPlacement } from "./useDragPlacement";
@@ -41,14 +41,29 @@ const NEIGHBOR_REFRESH_MS = 5000;
 /**
  * `relationship_reaction` をログに残す最短間隔 (ms)。
  *
- * 挿話は 6〜14 秒ごとに起きる。全部記録すると 2000 件のリングバッファが
- * 数時間で埋まって他の出来事を押し出し、記録のたびに writeSave が走る。
- * 「関係の演出が実際に起きているか」を知るには 1 分に 1 件で足りる。
+ * ここは「記録の量」ではなく**指標 D の正しさ**で決まる。依頼書22章の D は
+ * 「`relationship_reaction` から 30 秒以内の `plush_drag_end`」＝
+ * 関係の演出を見て並べ替えたか、を数える。間引きすぎると
+ * 「記録されなかった演出をきっかけにした並べ替え」が指標から丸ごと消え、
+ * D は粗くなるのではなく**過小に出る**（1分に1件では挿話の 1/7 しか
+ * 記録されず、残り 6/7 に反応した並べ替えは誰にも見えない）。
+ *
+ * 挿話の開始間隔は最大 17 秒（間隔 6〜14 秒 + 長さ 2〜3 秒）なので、
+ * 最短間隔を 12 秒にすると記録どうしの空白は最悪でも 12 + 17 = 29 秒 < 30 秒。
+ * 「棚で演出が起きている間、どの 30 秒窓にも必ず 1 件は記録がある」ことが
+ * 保証され、D は取りこぼさない。それでいて記録は 1 時間あたり 300 件以下に
+ * 収まるので、2000 件のリングバッファは 6 時間以上の連続凝視に耐える。
  */
-const REACTION_LOG_GAP_MS = 60_000;
+const REACTION_LOG_GAP_MS = 12_000;
 
 /** 何も操作せずに眺めていられた時間の観測点 (ms)。仕様5.8。 */
 const IDLE_MARKS = [10_000, 30_000] as const;
+
+/** 隣接キー（`pairKey` が作る "a|b"）がこの個体を含むか。 */
+function keyInvolves(key: string, instanceId: string): boolean {
+  const [a, b] = key.split("|");
+  return a === instanceId || b === instanceId;
+}
 
 /**
  * 棚画面 = ぬいぐるみたちが暮らしている小さな部屋。
@@ -96,10 +111,27 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
   });
   /** 起動直後の1回目の隣接計算か。復元と配置確定を区別する（仕様5.4） */
   const firstNeighborPassRef = useRef(true);
+  /**
+   * この画面が立ち上がった時点で、まだ演出を終えていない「迎えたばかりの子」。
+   *
+   * 獲得のたびに App は棚を作り直す（アーケードへ行って戻ってくる）ので
+   * `firstNeighborPassRef` は必ず true から始まる。一方、出会いの演出が
+   * 走っている間は隣接を計算しないので、**1回目の計算は演出が終わったあと**に
+   * ずれ込む。それを「起動直後の復元」と同じ扱いにすると、いま迎えたばかりの
+   * 子のリンク — `store.findSlot` が必ず既存の子の隣を選ぶので必ず1本できる —
+   * が「前のセッションから続いていた関係」として捨てられ、挨拶も
+   * `neighbor_created` も永久に起きない。この機能でいちばん見せたい瞬間が
+   * 消える経路なので、誰が「いま来た子」かをここに控えておき、
+   * その子のリンクだけは1回目でも「いま起きた変化」として扱う。
+   */
+  const arrivedGuestRef = useRef<string | null>(store.get().pendingWelcome);
   /** ドラッグ中か。コールバックを作り直さずに読む */
   const draggingRef = useRef(false);
-  /** 直近で relationship_reaction を記録した時刻 */
-  const lastReactionLogRef = useRef(0);
+  /**
+   * 直近で relationship_reaction を記録した時刻。
+   * 単位は**挿話の時計**（rAF のタイムスタンプ）であって Date.now ではない。
+   */
+  const lastReactionLogRef = useRef(Number.NEGATIVE_INFINITY);
   /** 「何も操作していない時間」を測り直す。操作のたびに呼ぶ */
   const idleResetRef = useRef<() => void>(() => {});
 
@@ -160,10 +192,17 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
    */
   const onTransition = useCallback((started: Episode | null) => {
     if (!started) return;
-    const now = Date.now();
-    if (now - lastReactionLogRef.current < REACTION_LOG_GAP_MS) return;
-    lastReactionLogRef.current = now;
-    store.log("relationship_reaction", { meta: { kind: started.kind } });
+    // 間引きの基準は挿話と同じ時計（rAF のタイムスタンプ）を使う。Date.now は
+    // 端末の時刻設定やスリープ復帰で飛ぶことがあり、未来へ飛ぶと以後の演出が
+    // 長時間まったく記録されなくなる。startedAt なら挿話の間隔と同じ物差しで
+    // 「29 秒以内に必ず1件」を保証できる（REACTION_LOG_GAP_MS のコメント）。
+    if (started.startedAt - lastReactionLogRef.current < REACTION_LOG_GAP_MS) return;
+    lastReactionLogRef.current = started.startedAt;
+    // meta は Task 10 の集計（依頼書22章 指標 D）が読む形にする。
+    // `kind` だけでは誰と誰の反応か分からず、D も E も組み立てられない。
+    store.log("relationship_reaction", {
+      meta: { source: started.a, target: started.b, reactionType: started.kind },
+    });
   }, []);
 
   // ref の中身をレンダー中に差し替える。instancesRef と同じ扱い。
@@ -197,28 +236,57 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
     rel.revision += 1;
     store.setNeighborSince(res.neighborSince);
 
-    if (firstNeighborPassRef.current) {
-      // 起動直後の1回目は「保存されていた関係の復元」であって、
-      // いま起きた変化ではない。仕様5.4:「起動直後や移行直後に大量の
-      // リンクが『新規』として検出される場合は挨拶しない」。
-      //
-      // removed も同じ理由で捨てる。前のセッションで箱へ戻した個体の
-      // キーが neighborSince に残っていると、ここで一度だけ removed に
-      // 現れる（Task 4 の申し送り）。それを「いま別れた」として記録すると、
-      // 何日も前の別れに今日の時刻が付く。傾きも、復元直後は
-      // 寄りかかっていないので戻すものがない。
-      firstNeighborPassRef.current = false;
-      return;
-    }
+    /**
+     * 起動直後の1回目は「保存されていた関係の復元」であって、
+     * いま起きた変化ではない。仕様5.4:「起動直後や移行直後に大量の
+     * リンクが『新規』として検出される場合は挨拶しない」。
+     *
+     * removed も同じ理由で捨てる。前のセッションで箱へ戻した個体の
+     * キーが neighborSince に残っていると、ここで一度だけ removed に
+     * 現れる（Task 4 の申し送り）。それを「いま別れた」として記録すると、
+     * 何日も前の別れに今日の時刻が付く。傾きも、復元直後は
+     * 寄りかかっていないので戻すものがない。
+     *
+     * **「演出で遅れただけの1回目」は復元ではない。** 迎えたばかりの子
+     * （`arrivedGuestRef`）のリンクだけは、1回目でも復元から除外する。
+     * その子は数秒前にクレーンから帰ってきて、いま既存の子の隣に置かれた
+     * ばかりであり、そのリンクこそプレイヤーに見せるべき「いま生まれた関係」
+     * だからである。それ以外のリンクは、この子が来る前から棚にあった関係＝
+     * 復元なので、これまでどおり黙って受け入れる。
+     */
+    const restoring = firstNeighborPassRef.current;
+    firstNeighborPassRef.current = false;
+    const guest = arrivedGuestRef.current;
+    const created = restoring
+      ? res.created.filter((key) => guest !== null && keyInvolves(key, guest))
+      : res.created;
+    const removed = restoring ? [] : res.removed;
 
-    for (let i = 0; i < res.created.length; i++) store.log("neighbor_created");
-    for (let i = 0; i < res.removed.length; i++) store.log("neighbor_removed");
+    /**
+     * `sameType` を meta に載せる。Task 10 の指標 E（同じ種類を隣に置くか）が
+     * `neighbor_created` の `meta.sameType` を数えるため、ここで付けておかないと
+     * 集計側が棚の実装まで遡ることになる。
+     */
+    const linkByKey = new Map(res.links.map((l) => [pairKey(l.a, l.b), l]));
+    const sameTypeOf = (key: string): boolean => {
+      const l = linkByKey.get(key);
+      // 消えたリンクはもう res.links にいないので、個体から引き直す。
+      if (l) return l.sameType;
+      const [x, y] = key.split("|");
+      const px = instancesRef.current.find((o) => o.instanceId === x);
+      const py = instancesRef.current.find((o) => o.instanceId === y);
+      // 個体が見つからないなら「同じ種類」とは言えない。分からないものを埋めない。
+      return px !== undefined && py !== undefined && px.plushTypeId === py.plushTypeId;
+    };
 
-    if (res.created.length > 0) {
+    for (const key of created) store.log("neighbor_created", { meta: { sameType: sameTypeOf(key) } });
+    for (const key of removed) store.log("neighbor_removed", { meta: { sameType: sameTypeOf(key) } });
+
+    if (created.length > 0) {
       // まだ消費されていない created が残っていることがある（演出中など）。
       // 取りこぼさず、同じキーを二重に積まない。
       const pending = new Set(rel.created);
-      for (const key of res.created) pending.add(key);
+      for (const key of created) pending.add(key);
       rel.created = [...pending];
     }
   }, []);

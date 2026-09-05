@@ -451,6 +451,40 @@ describe("useAmbientLife — 棚への組み込み", () => {
     expect(peak).toBeGreaterThan(2.8);
   });
 
+  it("時計が巻き戻っても顔が画面の外へ飛ばない", () => {
+    // 「隣をちらっと見る」の台形カーブは 0-1 に収まっていなければならない。
+    // 下側が開いていると（Math.min(1, ...) だけだと）、時刻が巻き戻った1フレームで
+    // 係数が大きな負になり、顔の <g> が千 px 単位で外へ飛んで**顔がまるごと消える**。
+    // 実測で translate(-1908.57 0) が出ている。rAF のタイムスタンプは単調な
+    // はずだが、消える壊れ方に対して 1 回の clamp は安い。
+    const t0 = startTime();
+    const rel = relations({
+      links: [link("a", "b")],
+      // 自発的な挿話を混ぜない。顔の平行移動を「隣を見る」だけに絞る。
+      director: { episode: null, fading: null, nextAt: t0 + 1e9 },
+    });
+    const { container } = render(
+      <Harness targets={[target("a", 100), target("b", 182)]} rel={rel} />
+    );
+    const faceLook = (): number => {
+      const tr = container.querySelector('[data-part="face"]')!.getAttribute("transform") ?? "";
+      const m = /translate\((-?[\d.]+) 0\)/.exec(tr);
+      return m ? Number.parseFloat(m[1]) : Number.NaN;
+    };
+
+    // 隣を見るのは 5〜11 秒後。始まるまで進める。
+    let glancingAt = 0;
+    for (let i = 1; i <= 160 && glancingAt === 0; i++) {
+      tick(t0 + i * 100);
+      if (Math.abs(faceLook()) > 0.1) glancingAt = t0 + i * 100;
+    }
+    expect(glancingAt, "隣を見る動きが始まらなかった").toBeGreaterThan(0);
+
+    tick(glancingAt - 10_000);
+    // 3.2 = GLANCE_PX。振れ幅そのものを超えて外へ出ることは無い。
+    expect(Math.abs(faceLook()), "顔が画面外へ飛んでいる").toBeLessThanOrEqual(3.2);
+  });
+
   it("挿話の眠さが目の高さに出る", () => {
     const t0 = startTime();
     const ep: Episode = {
