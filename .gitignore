@@ -5,3 +5,6 @@ dist/
 
 # TypeScript のビルド情報。生成物なので追跡しない
 *.tsbuildinfo
+
+# Subagent-Driven Development の作業用スクラッチ。生成物なので追跡しない
+.superpowers/
