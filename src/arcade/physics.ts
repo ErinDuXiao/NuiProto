@@ -99,9 +99,18 @@ export const DEFAULT_PIT: Pit = {
   exit: { x: 34, z: 18, r: 34 },
 };
 
+/**
+ * 出口へ落ちた景品。**種類も一緒に運ぶ。**
+ *
+ * 呼び出し側に id だけ渡すと、種類を知りたい相手は `"rabbit_01#0"` を
+ * `split("#")` して復元することになる。id の作り方を変えた瞬間に
+ * 来歴の種類が静かに壊れるので、取り除く側が知っている defId をそのまま渡す。
+ */
+export type FallenPrize = { id: string; defId: string };
+
 export type StepResult = {
-  /** このステップで出口へ落ちた景品の id */
-  fallen: string[];
+  /** このステップで出口へ落ちた景品。種類も一緒に運ぶ */
+  fallen: FallenPrize[];
   /** 景品同士がぶつかった回数。効果音の強さに使う */
   impacts: number;
 };
@@ -125,14 +134,14 @@ export function atRest(bodies: Body[]): boolean {
 
 /**
  * 1 ステップ進める。**bodies を破壊的に更新する。**
- * 出口へ落ちた景品は配列から取り除かれ、その id が fallen に入る。
+ * 出口へ落ちた景品は配列から取り除かれ、その id と種類が fallen に入る。
  *
  * この関数はクレーンの状態機械を呼ばない。呼び出し側が同じループで
  * step と tickCrane の両方を回す（責務の分離。craneMachine.ts 参照）。
  */
 export function step(bodies: Body[], pit: Pit, dt: number): StepResult {
   const h = Math.min(Math.max(Number.isFinite(dt) ? dt : 0, 0), MAX_DT);
-  const fallen: string[] = [];
+  const fallen: FallenPrize[] = [];
   let impacts = 0;
 
   // 積分。まず値を安全な範囲に丸めてから進める
@@ -237,7 +246,8 @@ export function step(bodies: Body[], pit: Pit, dt: number): StepResult {
     if (b.held) continue;
     if (b.y > 0.5) continue;
     if (exitDistance(b, pit) > pit.exit.r) continue;
-    fallen.push(b.id);
+    // splice する直前なら種類がまだ手元にある。ここで一緒に渡す
+    fallen.push({ id: b.id, defId: b.defId });
     bodies.splice(i, 1);
   }
 

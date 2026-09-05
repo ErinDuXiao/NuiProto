@@ -44,7 +44,7 @@ function runAttempt(c: Crane, bodies: Body[], ax: number, az: number): CraneEven
   let flush = -1;
   for (let i = 0; i < LIMIT; i++) {
     const r = step(bodies, DEFAULT_PIT, STEP);
-    for (const id of r.fallen) events.push({ kind: "won", bodyId: id });
+    for (const f of r.fallen) events.push({ kind: "won", bodyId: f.id, defId: f.defId });
     events.push(...tickCrane(c, bodies, DEFAULT_PIT, STEP));
     if (flush >= 0) {
       if (++flush >= FLUSH) return events;

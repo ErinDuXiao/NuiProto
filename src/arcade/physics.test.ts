@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { step, atRest, exitDistance, DEFAULT_PIT, STEP, type Body } from "./physics";
+import {
+  step,
+  atRest,
+  exitDistance,
+  DEFAULT_PIT,
+  STEP,
+  type Body,
+  type FallenPrize,
+} from "./physics";
 
 const body = (over: Partial<Body> = {}): Body => ({
   id: "a",
@@ -16,8 +24,8 @@ const body = (over: Partial<Body> = {}): Body => ({
   ...over,
 });
 
-function settle(bodies: Body[], seconds = 5): string[] {
-  const fallen: string[] = [];
+function settle(bodies: Body[], seconds = 5): FallenPrize[] {
+  const fallen: FallenPrize[] = [];
   for (let i = 0; i < seconds * 120; i++) {
     fallen.push(...step(bodies, DEFAULT_PIT, STEP).fallen);
   }
@@ -116,19 +124,36 @@ describe("衝突", () => {
 describe("出口", () => {
   it("出口の上に来ると落ちて fallen に入る", () => {
     const b = [body({ x: DEFAULT_PIT.exit.x, z: DEFAULT_PIT.exit.z, y: 100 })];
-    expect(settle(b, 4)).toContain("a");
+    expect(settle(b, 4).map((f) => f.id)).toContain("a");
   });
 
   it("出口から遠ければ落ちない", () => {
     const b = [body({ x: DEFAULT_PIT.exit.x + 200, z: DEFAULT_PIT.exit.z, y: 100 })];
-    expect(settle(b, 4)).not.toContain("a");
+    expect(settle(b, 4).map((f) => f.id)).not.toContain("a");
   });
 
   it("落ちた物体は二度と fallen に入らず、盤面から取り除かれる", () => {
     const b = [body({ x: DEFAULT_PIT.exit.x, z: DEFAULT_PIT.exit.z, y: 100 })];
     const f = settle(b, 6);
-    expect(f.filter((id) => id === "a")).toHaveLength(1);
+    expect(f.filter((p) => p.id === "a")).toHaveLength(1);
     expect(b).toHaveLength(0);
+  });
+
+  it("落ちた景品の種類も一緒に報告する（IDから復元させない）", () => {
+    const b = [
+      body({
+        id: "x1",
+        defId: "rabbit_01",
+        x: DEFAULT_PIT.exit.x,
+        z: DEFAULT_PIT.exit.z,
+        y: 100,
+      }),
+    ];
+    let fallen: { id: string; defId: string }[] = [];
+    for (let i = 0; i < 600; i++) fallen.push(...step(b, DEFAULT_PIT, STEP).fallen);
+    expect(fallen).toHaveLength(1);
+    expect(fallen[0].id).toBe("x1");
+    expect(fallen[0].defId).toBe("rabbit_01");
   });
 
   it("held のまま出口の上にあっても落ちない", () => {

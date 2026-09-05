@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sfx } from "../audio/sfx";
 import { store, useGame } from "../state/store";
 import { boardToSave, makeBoard, restoreBoard } from "./board";
+import { commitWin } from "./commitWin";
 import { CraneView, VIEW } from "./CraneView";
 import {
   createCrane,
@@ -123,7 +124,7 @@ export function ArcadeScreen({ onGoShelf, debugPhysics, showFps }: Props) {
         steps++;
         const r = step(bodies, PIT, STEP);
         if (r.impacts > 0) sfx.bump(Math.min(1, r.impacts * 0.4));
-        for (const id of r.fallen) handleEvent({ kind: "won", bodyId: id });
+        for (const f of r.fallen) handleEvent({ kind: "won", bodyId: f.id, defId: f.defId });
         for (const e of tickCrane(crane, bodies, PIT, STEP)) handleEvent(e);
       }
       if (steps >= 8) acc = 0;
@@ -218,19 +219,17 @@ export function ArcadeScreen({ onGoShelf, debugPhysics, showFps }: Props) {
         if (wonRef.current) break;
         wonRef.current = true;
         sfx.success();
-        const plushTypeId = e.bodyId?.split("#")[0];
-        if (plushTypeId) {
-          // attemptsOnBoard は盤面ごとのカウンタで、盤面が補充されると 0 に戻る。
-          // ここで読まないと「何回目で取れたか」が失われる（仕様 4.3）。
-          store.winPlush({
-            plushTypeId,
-            attemptsToAcquire: crane.attemptsOnBoard,
-            witnessedBy: watcherRef.current?.instanceId ?? null,
-          });
-          store.saveBoard(null);
-          // 少し余韻を置いてから棚へ帰る
-          returnTimer.current = window.setTimeout(() => goShelfRef.current(), 1500);
-        }
+        if (!e.bodyId || !e.defId) break;
+        // 来歴の組み立てと保存順序は commitWin に閉じ込めてある。
+        // 画面側で attemptsOnBoard を読むと、その一行がテストの届かない
+        // 場所に置かれることになる（仕様 4.4）。
+        commitWin(
+          crane,
+          { id: e.bodyId, defId: e.defId },
+          watcherRef.current?.instanceId ?? null
+        );
+        // 少し余韻を置いてから棚へ帰る
+        returnTimer.current = window.setTimeout(() => goShelfRef.current(), 1500);
         break;
       }
     }

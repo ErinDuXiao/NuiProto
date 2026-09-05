@@ -1,6 +1,13 @@
 import { getPlush, plushCoefficient } from "../data/plushies";
 import type { PlushDef } from "../state/types";
-import { atRest, exitDistance, rollSpeedFor, type Body, type Pit } from "./physics";
+import {
+  atRest,
+  exitDistance,
+  rollSpeedFor,
+  type Body,
+  type FallenPrize,
+  type Pit,
+} from "./physics";
 
 /**
  * クレーンの難易度と状態機械。
@@ -258,7 +265,11 @@ export type CraneEventKind =
   | "nudged"
   | "settled";
 
-export type CraneEvent = { kind: CraneEventKind; bodyId?: string };
+/**
+ * `defId` は "won" のときに必ず入る。獲得した景品の種類を
+ * bodyId の文字列から復元させないため（physics.FallenPrize と同じ理由）。
+ */
+export type CraneEvent = { kind: CraneEventKind; bodyId?: string; defId?: string };
 
 export type Crane = {
   state: CraneState;
@@ -529,7 +540,26 @@ function nudge(target: Body, c: Crane): void {
 function acquire(target: Body, bodies: Body[], events: CraneEvent[]): void {
   const i = bodies.indexOf(target);
   if (i >= 0) bodies.splice(i, 1);
-  events.push({ kind: "won", bodyId: target.id });
+  events.push({ kind: "won", bodyId: target.id, defId: target.defId });
+}
+
+/**
+ * won イベントから、保存すべき来歴を決める。
+ *
+ * attemptsOnBoard は盤面が補充されると 0 に戻る。したがってこの関数は
+ * **won を処理した直後、盤面を作り直す前に**呼ばなければならない。
+ * 種類は ID 文字列から復元せず、落ちた景品そのものから受け取る。
+ */
+export function resolveWin(
+  crane: Crane,
+  won: FallenPrize,
+  watcherInstanceId: string | null
+): { plushTypeId: string; attemptsToAcquire: number; witnessedBy: string | null } {
+  return {
+    plushTypeId: won.defId,
+    attemptsToAcquire: Math.max(1, crane.attemptsOnBoard),
+    witnessedBy: watcherInstanceId,
+  };
 }
 
 function finish(c: Crane): void {
