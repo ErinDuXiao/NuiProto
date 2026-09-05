@@ -232,7 +232,25 @@ export function tickDirector(
 
   // 2. 新しいリンクの挨拶は、走っている挿話に割り込んでよい。
   //    置いた直後に何も起きないと「置いたこと」への反応が消えてしまう（仕様5.7）。
-  const greet = pickCreatedLink(created, byKey);
+  //
+  //    ただし、いま走っている greeting と同じペアの created は無視する。
+  //    computeNeighbors はペアごとに created を1回しか出さないが、Task 6 は
+  //    毎フレーム tickDirector を呼ぶ側であり、「配置確定時の created を
+  //    ref に保持してそのまま渡し続ける」実装は自然にありうる。そこで
+  //    無条件に再スタートすると、挨拶が完走する前に毎フレーム startedAt が
+  //    now に置き換わり続け、姿勢は開始直後の一瞬（u がほぼ0）に凍り付いたまま
+  //    挨拶が一生「終わらない」（レビューで実測: 2秒で41回開始・40回終了、
+  //    hop は 0.082 に固着）。加えて Task 6 は非nullの started を見て
+  //    setState する仕様なので、それが毎フレーム発火し続け、
+  //    「物理と React の分離を維持する」という Global Constraint を破る。
+  //
+  //    同じペアだけを除外し、他のペアはそのまま created として扱うのが要点。
+  //    こうすれば「違うペアの挨拶は割り込んでよい」という元々の意図
+  //    （素早く2匹目・3匹目を置いたときの反応）はそのまま保たれる。
+  const runningGreetKey =
+    episode && episode.kind === "greeting" ? pairKey(episode.a, episode.b) : null;
+  const creatable = runningGreetKey ? created.filter((key) => key !== runningGreetKey) : created;
+  const greet = pickCreatedLink(creatable, byKey);
   if (greet) {
     if (episode) {
       ended = episode;
@@ -275,7 +293,22 @@ export function tickDirector(
 
 export type EpisodePose = { lookAt: number; hop: number; eyeOpen: number; tilt: number };
 
-const NEUTRAL: EpisodePose = { lookAt: 0, hop: 0, eyeOpen: 1, tilt: 0 };
+/**
+ * 挿話が無い・関与していないときに返す共有の中立姿勢。
+ *
+ * `Object.freeze` で凍らせる理由: 計画の Task 6 は「episodePose の結果を
+ * 上乗せする」と書いており、実装が `p.tilt += lean` のような in-place の
+ * 加算になる可能性がある。凍らせていないと、この関数が返す共有オブジェクトへの
+ * 書き込みがモジュールの NEUTRAL そのものを永久に書き換え、以後すべての個体・
+ * すべての呼び出しの中立姿勢が汚染される — 「モジュールレベルの可変状態を
+ * 持たない」という純粋性の要件が、公開 API の返り値経由で破られる形になる。
+ *
+ * 対案（毎回 `{ ...NEUTRAL }` を新規に返す）ではなくこちらを選んだのは、
+ * ESM は常に strict mode なので、凍結後の書き込みはその場で TypeError に
+ * なって即座に気づけるから。この関数は棚の毎フレーム・毎個体で呼ばれる
+ * 経路なので、書き込みを検出できるなら余計な割り当てをしない方がよい。
+ */
+const NEUTRAL: EpisodePose = Object.freeze({ lookAt: 0, hop: 0, eyeOpen: 1, tilt: 0 });
 
 /**
  * 挿話内の局所時間。`delay` の分だけ遅れて始まり、挿話の終わりで必ず 0 に戻る。

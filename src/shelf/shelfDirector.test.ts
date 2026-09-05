@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  createDirector, tickDirector, directorPose,
+  createDirector, tickDirector, directorPose, episodePose,
   EPISODE_MIN_GAP_MS, EPISODE_MAX_GAP_MS, EPISODE_MAX_MS, FADE_MS,
   type DirectorState, type Episode, type Personality,
 } from "./shelfDirector";
@@ -155,6 +155,96 @@ describe("greeting の割り込み（仕様5.4）", () => {
     // 最も affinity の高いリンクが選ばれる
     expect([r.started!.a, r.started!.b].sort()).toEqual(["a", "c"]);
     expect(r.state.episode?.kind).toBe("greeting");
+  });
+});
+
+/**
+ * レビュー I-1: 「created が空でなければ無条件に挨拶を(再)始める」実装だと、
+ * 呼び出し側（Task 6）が created を ref に保持して毎フレーム渡し続けたとき、
+ * 挨拶が完走する前に毎フレーム再スタートしてしまう。指揮そのものを
+ * 頑丈にして、既に走っている同じペアの挨拶は無視することを確かめる。
+ */
+describe("同じ created を毎フレーム渡され続けても、走っている挨拶を再スタートしない（レビュー I-1）", () => {
+  it("走っている間ずっと同じ created が来ても、挨拶は1回だけ始まり最後まで走る", () => {
+    const links = [link("a", "b")];
+    const created = [pairKey("a", "b")];
+    const rnd = evenRnd();
+    let s = createDirector(0);
+    const started: Episode[] = [];
+    let ended: Episode | null = null;
+    let maxHop = 0;
+
+    // 挨拶が終わって ended が報告されるまで、同じ created を渡し続ける。
+    for (let t = 0; t <= 4000 && !ended; t += 50) {
+      const r = tickDirector(s, links, created, NO_PERSONALITY, t, rnd);
+      s = r.state;
+      if (r.started) started.push(r.started);
+      if (r.ended) ended = r.ended;
+      if (s.episode) {
+        maxHop = Math.max(maxHop, Math.abs(directorPose(s, "a", t).hop));
+      }
+    }
+
+    expect(started.length, "created を毎フレーム渡すと挨拶が再スタートしている").toBe(1);
+    expect(started[0].kind).toBe("greeting");
+    expect(ended, "挨拶が最後まで走らずタイムアウトした").not.toBeNull();
+    // 毎フレーム再スタートするバグでは startedAt が常に now に張り付き、
+    // u がほぼ0のまま止まるので hop は育たない（レビューでの実測値は 0.082）。
+    // 最後まで走れば hop は明確に育つはずである。
+    expect(maxHop, "振幅が育たないまま終わった（凍った微小姿勢のまま）").toBeGreaterThan(1);
+  });
+
+  it("違うペアの created は、従来どおり走っている挨拶に割り込む（既存ルールは変えない）", () => {
+    const links = [link("a", "b"), link("c", "d")];
+    const rnd = evenRnd();
+    let s = createDirector(0);
+
+    let r = tickDirector(s, links, [pairKey("a", "b")], NO_PERSONALITY, 0, rnd);
+    s = r.state;
+    expect(r.started?.kind).toBe("greeting");
+    expect(pairKey(r.started!.a, r.started!.b)).toBe(pairKey("a", "b"));
+
+    // 同じペアの created を繰り返し渡しても再スタートしない（今回の修正）
+    r = tickDirector(s, links, [pairKey("a", "b")], NO_PERSONALITY, 50, rnd);
+    s = r.state;
+    expect(r.started, "同じペアなのに再スタートした").toBeNull();
+
+    // 違うペアの created が来たら、走っている挨拶を打ち切って割り込む
+    r = tickDirector(s, links, [pairKey("c", "d")], NO_PERSONALITY, 100, rnd);
+    expect(r.started?.kind).toBe("greeting");
+    expect(pairKey(r.started!.a, r.started!.b)).toBe(pairKey("c", "d"));
+    expect(r.ended, "打ち切られた最初の挨拶が報告されない").not.toBeNull();
+    expect(r.ended!.startedAt).toBe(0);
+    expect(r.state.fading, "消えかけの挿話が保持されていない").not.toBeNull();
+  });
+});
+
+/**
+ * レビュー I-2: episodePose が返す中立姿勢は、モジュール直下の共有定数
+ * NEUTRAL への参照だった。呼び出し側が返り値へ in-place で書き込むと
+ * （計画の「episodePose の結果を上乗せする」を素直に実装すると起きうる）、
+ * それ以降ずっとすべての個体の中立姿勢が汚染される。
+ */
+describe("episodePose の中立姿勢は共有状態を漏らさない（レビュー I-2）", () => {
+  it("返り値を書き換えても、次の呼び出し結果や他の中立姿勢に影響しない", () => {
+    const ep: Episode = { kind: "look", a: "a", b: "b", startedAt: 0, durationMs: 2400 };
+    // "z" は ep に関与していないので中立姿勢が返る
+    const neutral = episodePose(ep, "z", 1000);
+    expect(neutral).toEqual({ lookAt: 0, hop: 0, eyeOpen: 1, tilt: 0 });
+
+    // NEUTRAL が凍っているので、直接の書き込みは ESM の strict mode で例外になる。
+    // 例外が起きること自体が「共有オブジェクトの参照を握っている」ことの証拠であり、
+    // 例外にならず書き込めてしまう実装は、以後の呼び出しを汚染する余地がある。
+    expect(() => {
+      neutral.tilt = 999;
+    }).toThrow();
+
+    // 書き込みを試みた後でも、別の中立姿勢の呼び出しは汚染されていない
+    const again = episodePose(ep, "z", 1000);
+    expect(again).toEqual({ lookAt: 0, hop: 0, eyeOpen: 1, tilt: 0 });
+    const otherEpisode: Episode = { kind: "sameDirection", a: "x", b: "y", startedAt: 0, durationMs: 2400 };
+    const otherNeutral = episodePose(otherEpisode, "z", 1000);
+    expect(otherNeutral).toEqual({ lookAt: 0, hop: 0, eyeOpen: 1, tilt: 0 });
   });
 });
 
