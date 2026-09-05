@@ -90,6 +90,24 @@ describe("individuality", () => {
     const b = applyIndividuality(getPlush("rabbit_01"), 0.8);
     expect(a.art.body).not.toBe(b.art.body);
   });
+
+  // Task 5（指揮）が sleepiness を必要とするため、元の計画の Task 6 から
+  // ここへ前倒しした（仕様5.6）。
+  it("個体差に leanPreference / sleepiness / socialDistance が含まれる", () => {
+    for (let s = 0; s <= 1; s += 0.05) {
+      const iv = individuality(s);
+      expect(iv.leanPreference).toBeGreaterThanOrEqual(0.7);
+      expect(iv.leanPreference).toBeLessThanOrEqual(1.3);
+      expect(iv.sleepiness).toBeGreaterThanOrEqual(0);
+      expect(iv.sleepiness).toBeLessThanOrEqual(1);
+      expect(iv.socialDistance).toBeGreaterThanOrEqual(0.85);
+      expect(iv.socialDistance).toBeLessThanOrEqual(1.15);
+    }
+  });
+
+  it("追加した個体差も決定論的", () => {
+    expect(individuality(0.42)).toEqual(individuality(0.42));
+  });
 });
 
 describe("shiftHue", () => {

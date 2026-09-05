@@ -66,6 +66,20 @@ export type Individuality = {
   chatty: number;
   /** セリフ選択用 0-1 */
   linePick: number;
+  /**
+   * 寄りかかりやすさ (0.7-1.3)。隣接判定の閾値には使わない —
+   * 個体ごとに閾値が違うと非対称なリンクが生まれ、「どう置けば隣になるか」が
+   * プレイヤーから読み取れなくなる（仕様5.6）。寄りかかりの深さにだけ効かせる。
+   */
+  leanPreference: number;
+  /** 眠りやすさ (0-1)。sleepTogether の挿話が選ばれる重みに効かせる（仕様5.6） */
+  sleepiness: number;
+  /**
+   * 隣との距離の好み (0.85-1.15)。affinity には混ぜない —
+   * 眠さと同様、これを affinity に混ぜると「どのリンクを選ぶか」に
+   * 性格が漏れ出し、指揮の判断が個体差で歪む。
+   */
+  socialDistance: number;
 };
 
 /**
@@ -95,6 +109,9 @@ export function individuality(seed: number): Individuality {
     blinkBase: 3 + f(4) * 4,
     chatty: f(5),
     linePick: f(6),
+    leanPreference: 0.7 + f(9) * 0.6,
+    sleepiness: f(10),
+    socialDistance: 0.85 + f(11) * 0.3,
   };
 }
 
