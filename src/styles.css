@@ -388,6 +388,12 @@ button {
   border-radius: 10px;
 }
 
+/* 2度押し待ちの状態。押せば消えることが目で分かるようにする */
+.btn.tiny.danger {
+  background: #c08277;
+  color: #fff;
+}
+
 .dev-check {
   display: flex;
   align-items: center;

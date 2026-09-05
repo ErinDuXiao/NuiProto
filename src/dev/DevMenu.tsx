@@ -18,6 +18,43 @@ type Props = {
   onClose: () => void;
 };
 
+/** 2度押しを待つ時間。押しっぱなしの状態が残り続けないよう自動で解除する。 */
+const ARM_MS = 4000;
+
+/**
+ * 取り返しのつかない操作を2度押しにする。
+ *
+ * Developer Menu は公開ビルドにも入っている（依頼書25章で要求されており、
+ * 公開先がそのまま検証環境になっている）。誤って一度触れただけで
+ * 連れて帰った子が全部消えるのは、このゲームで最も起きてはならないことなので、
+ * 実行の前に必ずもう一度押させる。
+ */
+export function DangerButton({ label, onConfirm }: { label: string; onConfirm: () => void }) {
+  const [armed, setArmed] = useState(false);
+
+  useEffect(() => {
+    if (!armed) return;
+    const id = window.setTimeout(() => setArmed(false), ARM_MS);
+    return () => window.clearTimeout(id);
+  }, [armed]);
+
+  return (
+    <button
+      className={armed ? "btn tiny danger" : "btn tiny"}
+      onClick={() => {
+        if (!armed) {
+          setArmed(true);
+          return;
+        }
+        setArmed(false);
+        onConfirm();
+      }}
+    >
+      {armed ? `もう一度押すと${label}` : label}
+    </button>
+  );
+}
+
 /**
  * 開発検証用メニュー（依頼書 25 章）。
  *
@@ -41,19 +78,18 @@ export function DevMenu({ flags, onFlags, onClose }: Props) {
         </p>
 
         <section className="dev-row">
-          <button className="btn tiny" onClick={() => store.resetAll()}>
-            所持品リセット
-          </button>
-          <button
-            className="btn tiny"
-            onClick={() => {
+          <DangerButton label="所持品リセット" onConfirm={() => store.resetAll()} />
+          <DangerButton
+            label="localStorage全消去"
+            onConfirm={() => {
               clearSave();
               location.reload();
             }}
-          >
-            localStorage全消去
-          </button>
+          />
         </section>
+        <p className="dev-hint">
+          上の2つは取り返しがつきません。連れて帰った子が全部いなくなります。
+        </p>
 
         <section className="dev-row">
           <button

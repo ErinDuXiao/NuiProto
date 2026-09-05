@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # ワークフローのアクションを SHA で固定しているため、
+  # 更新を人手に任せると古いまま放置される。Dependabot に追わせる。
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
