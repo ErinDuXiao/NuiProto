@@ -115,15 +115,43 @@ function sanitizeAttempts(raw: unknown): number | null {
 }
 
 /**
+ * このゲームが実在し得る最古の日時（2026年の開始）。
+ *
+ * これより前の「来た日」は事実ではありえない。このゲーム自体が
+ * 2026年より前には存在しないので、それより古い値は保存データの
+ * 破損（0 や 1 のような小さな数値が紛れ込んだだけ）でしかない。
+ */
+const GAME_EPOCH_MS = new Date("2026-01-01T00:00:00Z").getTime();
+
+/**
+ * 「来た日」として受け入れる遠すぎない未来の上限（西暦2100年）。
+ *
+ * 未来の日付も同じ理屈で捏造になり得る。ここまで遠い日付は
+ * 桁が壊れた値（秒とミリ秒の取り違えなど）以外に生まれようがないので、
+ * 正常なプレイでは絶対に踏まない余裕を持たせつつ弾く。
+ */
+const FAR_FUTURE_MS = new Date("2100-01-01T00:00:00Z").getTime();
+
+/**
  * 家に来た日時。読めなければ現在時刻で埋めず null にする。
  *
  * `num(raw, Date.now())` で埋めていた頃は、壊れた保存データが
  * そのままプロフィールの「きょう、やってきた」になっていた。
  * ゲームが知らない日付を、読み込みのたびに新しく作っていたことになる。
  * 分からないものは分からないまま運ぶ（`PlushInstance.acquiredAt` の注記）。
+ *
+ * **数値であることだけでは足りない。** `sanitizeAttempts` が「数値だが
+ * あり得ない試行回数」を弾くのと同じ理由で、ここも「数値だが
+ * あり得ない日時」（1970年近辺や遠い未来）を弾く。0 や 1 のような
+ * 壊れた値をそのまま通すと、`provenance.ts` が自信満々に
+ * 「1月1日にやってきた」と語り出す（`shelfToPng.ts` の同種のコメント参照）。
+ * 範囲外なら null＝分からない、に落とす
+ * （Global Constraint「分からない来歴を捏造しない」）。
  */
 function sanitizeAcquiredAt(raw: unknown): number | null {
-  return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+  if (raw < GAME_EPOCH_MS || raw > FAR_FUTURE_MS) return null;
+  return raw;
 }
 
 /**

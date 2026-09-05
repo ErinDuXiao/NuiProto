@@ -6,13 +6,20 @@ import type { LogEventType } from "./types";
 beforeEach(() => localStorage.clear());
 afterEach(() => vi.restoreAllMocks());
 
-/** v1 時代の保存データ。移行の入力としてそのまま使う。 */
+/**
+ * v1 時代の保存データ。移行の入力としてそのまま使う。
+ *
+ * acquiredAt はこのゲームが実在し得る範囲（2026年以降）の値にする。
+ * `sanitizeAcquiredAt` はそれより前を「壊れた値」として null に落とすので、
+ * 1000 や 2000 のような小さな数値のままだと移行後に origin が
+ * 決まらなくなる（"最古の1匹" が見つからない）。
+ */
 const v1Fixture = {
   version: 1,
   sessionCount: 3,
   owned: [
-    { uid: "a", defId: "bear_01", acquiredAt: 1000, x: 160, shelfRow: 1, seed: 0.3 },
-    { uid: "b", defId: "rabbit_01", acquiredAt: 2000, x: 242, shelfRow: 1, seed: 0.7 },
+    { uid: "a", defId: "bear_01", acquiredAt: new Date("2026-01-10T00:00:00Z").getTime(), x: 160, shelfRow: 1, seed: 0.3 },
+    { uid: "b", defId: "rabbit_01", acquiredAt: new Date("2026-01-20T00:00:00Z").getTime(), x: 242, shelfRow: 1, seed: 0.7 },
   ],
   craneBoard: null,
   attempts: 5,
@@ -364,12 +371,13 @@ describe("persist / v1 からの移行", () => {
   });
 
   it("acquiredAt が壊れていても他の個体は読める", () => {
+    const validAcquiredAt = new Date("2026-02-01T00:00:00Z").getTime();
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
         version: 2,
         instances: [
-          { instanceId: "a", plushTypeId: "bear_01", acquiredAt: 1, x: 160, shelfRow: 1,
+          { instanceId: "a", plushTypeId: "bear_01", acquiredAt: validAcquiredAt, x: 160, shelfRow: 1,
             personalitySeed: 0.5, attemptsToAcquire: null, witnessedBy: null, origin: "starter" },
           { instanceId: "b", plushTypeId: "fox_01", acquiredAt: "むかし", x: 242, shelfRow: 1,
             personalitySeed: 0.5, attemptsToAcquire: null, witnessedBy: null, origin: "crane" },
@@ -379,7 +387,7 @@ describe("persist / v1 からの移行", () => {
     );
     const instances = loadSave().instances;
     expect(instances).toHaveLength(2);
-    expect(instances[0].acquiredAt).toBe(1);
+    expect(instances[0].acquiredAt).toBe(validAcquiredAt);
     expect(instances[1].acquiredAt).toBeNull();
   });
 
@@ -472,6 +480,38 @@ describe("persist / 壊れた来歴を捏造しない", () => {
     }
   );
 
+  // 0 や 1 は数値としては有効でも、このゲームが存在しない1970年近辺を指す。
+  // 「0回で取れた」を弾く sanitizeAttempts と同じ理由で、
+  // 「1970年に来た」という断定文も事実ではなく破損として扱う。
+  it.each([[0], [1], [-1], [new Date("2025-12-31T23:59:59Z").getTime()]])(
+    "acquiredAt が %s（ゲームが存在しない過去）なら null にし、1970年近辺を断定しない",
+    (acquiredAt) => {
+      const { inst, lines } = roundTrip({ acquiredAt });
+      expect(inst.acquiredAt).toBeNull();
+      expect(lines).toContain("いつからか、ここにいる");
+      expect(lines.some((l) => /\d+月\d+日/.test(l))).toBe(false);
+    }
+  );
+
+  // 遠すぎる未来も同じ理屈で捏造になる（桁が壊れた値以外に生まれ得ない）。
+  it("acquiredAt が遠い未来なら null にし、未来の日付を断定しない", () => {
+    const farFuture = new Date("2200-01-01T00:00:00Z").getTime();
+    const { inst, lines } = roundTrip({ acquiredAt: farFuture });
+    expect(inst.acquiredAt).toBeNull();
+    expect(lines).toContain("いつからか、ここにいる");
+  });
+
+  // 境界そのもの（2026年の開始・2100年の開始の直前）はサニタイズが
+  // 行き過ぎていないことの確認。
+  it("ゲーム開始日時ちょうど、遠い未来の直前は事実として残す", () => {
+    const epoch = new Date("2026-01-01T00:00:00Z").getTime();
+    expect(roundTrip({ acquiredAt: epoch }).inst.acquiredAt).toBe(epoch);
+    const justBeforeFarFuture = new Date("2099-12-31T23:59:59Z").getTime();
+    expect(roundTrip({ acquiredAt: justBeforeFarFuture }).inst.acquiredAt).toBe(
+      justBeforeFarFuture
+    );
+  });
+
   it("日付が分からなくても、分かっている回数は語る（知っている事実を捨てない）", () => {
     const { lines } = roundTrip({ acquiredAt: null, attemptsToAcquire: 5 });
     expect(lines).toContain("いつからか、ここにいる");
@@ -490,7 +530,7 @@ describe("persist / 壊れた来歴を捏造しない", () => {
       JSON.stringify({
         ...v1Fixture,
         owned: [
-          { uid: "a", defId: "bear_01", acquiredAt: 1000, x: 160, shelfRow: 1, seed: 0.3 },
+          { uid: "a", defId: "bear_01", acquiredAt: new Date("2026-01-10T00:00:00Z").getTime(), x: 160, shelfRow: 1, seed: 0.3 },
           { uid: "b", defId: "rabbit_01", acquiredAt: "?", x: 242, shelfRow: 1, seed: 0.7 },
         ],
       })
