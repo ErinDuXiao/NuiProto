@@ -206,6 +206,182 @@ describe("規模", () => {
   });
 });
 
+const degreeOf = (links: { a: string; b: string }[], id: string) =>
+  links.filter((k) => k.a === id || k.b === id).length;
+
+const maxDegree = (links: { a: string; b: string }[], ids: string[]) =>
+  ids.reduce((m, id) => Math.max(m, degreeOf(links, id)), 0);
+
+describe("次数の上界（隣が多すぎれば、それはもう「隣」ではない）", () => {
+  it("同じ x にほぼ全員が積み上がっても、次数は 4 を超えない", () => {
+    // レビューが見つけた実例。旧実装では 101 の 10 匹が全員 100 の子を
+    // 「左の最近傍」に指名し、その子の次数が 10 になっていた。
+    const xs = [100, ...Array<number>(10).fill(101), 102];
+    const all = xs.map((x, i) => inst(`q${i}`, x, 1));
+    const r = fresh(all);
+    const ids = all.map((p) => p.instanceId);
+
+    // (x, instanceId) の全順序で一列に並ぶので、鎖のリンクはちょうど 11 本。
+    expect(r.links).toHaveLength(11);
+    expect(maxDegree(r.links, ids), "同じ相手を全員が指名して次数が膨らんでいる").toBeLessThanOrEqual(4);
+  });
+
+  it("上下の段を巻き込んで密集しても、次数は 4 を超えない", () => {
+    // レビューが見つけたもうひとつの実例（旧実装で 33 本・最大次数 10）。
+    const xs = [150, 151, 152, 153, 150, 151, 152, 153, 150, 151];
+    const all = [
+      ...xs.map((x, i) => inst(`m${i}`, x, 2)),
+      inst("up", 150, 1),
+      inst("down", 153, 3),
+    ];
+    const r = fresh(all);
+    const ids = all.map((p) => p.instanceId);
+
+    expect(maxDegree(r.links, ids), "次数の上界が効いていない").toBeLessThanOrEqual(4);
+    // 段内の鎖 9 本 + 上下の相互指名 2 本。
+    expect(r.links).toHaveLength(11);
+  });
+
+  it("棚が満杯でも 1 匹あたりの隣は 4 匹まで", () => {
+    const all: PlushInstance[] = [];
+    for (let row = 0; row < SHELF.rows; row++) {
+      for (let col = 0; col < 3; col++) {
+        all.push(inst(`p${row}-${col}`, 78 + col * SLOT_SPACING, row));
+      }
+    }
+    const r = fresh(all);
+    expect(maxDegree(r.links, all.map((p) => p.instanceId))).toBeLessThanOrEqual(4);
+  });
+});
+
+describe("完全に同じ座標でも隣関係が成立する", () => {
+  it("同座標のままでも、リンクが 0 本にはならない", () => {
+    // 旧実装は「x が小さい側／大きい側」を厳密比較で探していたため、
+    // 同座標の子は誰の左でも右でもなく、リンクが 1 本も張られなかった。
+    // 「全員が同座標でも総当たりにならない」テストは 0 本でも通ってしまう。
+    const all = Array.from({ length: 12 }, (_, i) => inst(`p${i}`, 160, 1));
+    const r = fresh(all);
+    expect(r.links.length, "同座標だと誰の隣でもなくなっている").toBe(11);
+    expect(maxDegree(r.links, all.map((p) => p.instanceId))).toBeLessThanOrEqual(4);
+  });
+
+  it("1px ずらしただけで関係の数が激変しない", () => {
+    const stacked = Array.from({ length: 12 }, (_, i) => inst(`p${i}`, 160, 1));
+    const nudged = stacked.map((p, i) => (i === 0 ? { ...p, x: 161 } : p));
+    expect(fresh(nudged).links.length).toBe(fresh(stacked).links.length);
+  });
+
+  it("同座標の並び順は入力配列の順序に依存しない", () => {
+    // 保存データの並び順は保証されない。並べ替えただけで関係が変わると、
+    // 読み込むたびに違う「隣」が生まれる。
+    const all = Array.from({ length: 6 }, (_, i) => inst(`p${i}`, 160, 1));
+    const forward = fresh(all).links.map((k) => pairKey(k.a, k.b)).sort();
+    const backward = fresh([...all].reverse()).links.map((k) => pairKey(k.a, k.b)).sort();
+    expect(backward).toEqual(forward);
+  });
+});
+
+describe("ヒステリシス: 張る閾値と切る閾値は別物", () => {
+  it("初対面のペアは、張る閾値の外なら隣にならない", () => {
+    // 距離 115 は「切る閾値(124)の内側だが張る閾値(110)の外」。
+    // 両方に解消閾値を使う実装（＝ヒステリシスなし）はここだけで落ちる。
+    const a = inst("a", 100, 1);
+    const b = inst("b", 100 + 115, 1);
+    const r = computeNeighbors([a, b], [], {}, 1000);
+    expect(r.links, "張る側にも解消閾値を使っている").toHaveLength(0);
+    expect(r.created).toEqual([]);
+    expect(r.neighborSince).toEqual({});
+  });
+});
+
+describe("保存された隣接は再読み込みをまたいで続く", () => {
+  const pair = () => [inst("a", 78, 1), inst("b", 160, 1)];
+
+  it("再読み込み後も togetherMs が積み上がる", () => {
+    const list = pair();
+    const first = computeNeighbors(list, [], {}, 1000);
+    // 再読み込み直後は prev が必ず空。保存されているのは neighborSince だけ。
+    const afterReload = computeNeighbors(list, [], first.neighborSince, 500_000);
+    expect(afterReload.links[0].togetherMs, "起動のたびに 0 に戻っている").toBe(499_000);
+  });
+
+  it("再読み込みでは created を報告しない", () => {
+    // ここが漏れると、アプリを開くたびに既存のペア全部で
+    // 「隣になった」挿話が一斉に鳴る。
+    const list = pair();
+    const first = computeNeighbors(list, [], {}, 1000);
+    const afterReload = computeNeighbors(list, [], first.neighborSince, 500_000);
+    expect(afterReload.created, "既存の関係を毎回「新しい関係」にしている").toEqual([]);
+  });
+
+  it("ヒステリシスの内側にいるペアは再読み込みでも切れない", () => {
+    const a = inst("a", 100, 1);
+    const near = inst("b", 100 + NEIGHBOR_LINK_DISTANCE - 2, 1);
+    const first = computeNeighbors([a, near], [], {}, 0);
+    const drifted = { ...near, x: 100 + 118 }; // 110 <= 118 < 124
+    const moved = computeNeighbors([a, drifted], first.links, first.neighborSince, 100);
+    expect(moved.links).toHaveLength(1);
+
+    // 何も動かしていないのに読み込み直しただけで関係が消えるのは、
+    // ヒステリシスを入れた目的（点滅させない）に真っ向から反する。
+    // 保存された neighborSince を「このペアは繋がっていた」という
+    // 事実として扱い、解消閾値で判定する。
+    const afterReload = computeNeighbors([a, drifted], [], moved.neighborSince, 200);
+    expect(afterReload.links, "読み込み直しただけで関係が切れた").toHaveLength(1);
+    expect(afterReload.created).toEqual([]);
+  });
+
+  it("保存されていても解消閾値を超えていれば切れて removed に出る", () => {
+    const list = pair();
+    const first = computeNeighbors(list, [], {}, 1000);
+    const apart = [list[0], { ...list[1], x: 300 }];
+    const afterReload = computeNeighbors(apart, [], first.neighborSince, 2000);
+    expect(afterReload.links).toEqual([]);
+    expect(afterReload.removed).toContain(pairKey("a", "b"));
+    expect(afterReload.neighborSince).toEqual({});
+  });
+
+  it("壊れた neighborSince の値は since に採用しない", () => {
+    // NaN を since にすると togetherMs が NaN になり、親密度がまるごと壊れる。
+    const list = pair();
+    const broken: Record<string, number> = { [pairKey("a", "b")]: Number.NaN };
+    const r = computeNeighbors(list, [], broken, 5000);
+    expect(r.links).toHaveLength(1);
+    expect(Number.isFinite(r.links[0].togetherMs)).toBe(true);
+    expect(r.links[0].togetherMs).toBe(0);
+    expect(Number.isFinite(r.links[0].affinity)).toBe(true);
+  });
+});
+
+describe("computeNeighbors は純粋関数", () => {
+  it("instances / prev / neighborSince のどれも書き換えない", () => {
+    // 入力の配列を並べ替える実装に変わっても、返り値だけを見るテストでは
+    // 気づけない。凍結して呼び、値の同一性も併せて確かめる。
+    const list = [inst("b", 160, 1), inst("a", 78, 1), inst("c", 242, 1)];
+    const first = computeNeighbors(list, [], {}, 1000);
+
+    const instancesBefore = structuredClone(list);
+    const prevBefore = structuredClone(first.links);
+    const sinceBefore = structuredClone(first.neighborSince);
+
+    Object.freeze(list);
+    for (const p of list) Object.freeze(p);
+    Object.freeze(first.links);
+    for (const l of first.links) Object.freeze(l);
+    Object.freeze(first.neighborSince);
+
+    // ESM は strict mode なので、書き換えようとすればここで TypeError になる。
+    const second = computeNeighbors(list, first.links, first.neighborSince, 9000);
+
+    expect(list).toEqual(instancesBefore);
+    expect(first.links).toEqual(prevBefore);
+    expect(first.neighborSince).toEqual(sinceBefore);
+    // 返り値が入力を使い回していないこと（呼び出し側の変更が遡って効かない）
+    expect(second.neighborSince).not.toBe(first.neighborSince);
+    expect(second.links).not.toBe(first.links);
+  });
+});
+
 describe("shelfPointOf", () => {
   it("段のY座標を返す", () => {
     expect(shelfPointOf(inst("a", 160, 2))).toEqual({ x: 160, y: SHELF.rowY[2] });

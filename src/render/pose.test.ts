@@ -108,6 +108,58 @@ describe("individuality", () => {
   it("追加した個体差も決定論的", () => {
     expect(individuality(0.42)).toEqual(individuality(0.42));
   });
+
+  it("追加した個体差は seed で実際に変わる（定数ではない）", () => {
+    // レンジのテストは、3つとも定数を返す実装でも通ってしまう。
+    // 個体差が個体ごとに違わなければ、そもそも個体差ではない。
+    const lean = new Set<number>();
+    const sleep = new Set<number>();
+    const social = new Set<number>();
+    for (let s = 0; s < 1; s += 0.05) {
+      const iv = individuality(s);
+      lean.add(iv.leanPreference);
+      sleep.add(iv.sleepiness);
+      social.add(iv.socialDistance);
+    }
+    expect(lean.size, "leanPreference が seed で変わっていない").toBeGreaterThanOrEqual(18);
+    expect(sleep.size, "sleepiness が seed で変わっていない").toBeGreaterThanOrEqual(18);
+    expect(social.size, "socialDistance が seed で変わっていない").toBeGreaterThanOrEqual(18);
+  });
+
+  it("個体差の各フィールドがハッシュ枠を共有していない", () => {
+    // 個体差は f(n) というハッシュの n 番目の枠から作る。枠を使い回すと、
+    // たとえば sleepiness が chatty と恒等になり「眠さ」が「おしゃべりさ」の
+    // 別名に化ける。Task 5 の指揮は sleepiness をそのまま重みに使うので、
+    // この取り違えは画面上どこにも現れないまま間違い続ける。
+    // 各フィールドをレンジから元の 0-1 に戻し、全部が別値であることを見る。
+    const slots = (seed: number): Record<string, number> => {
+      const iv = individuality(seed);
+      return {
+        hueShift: iv.hueShift / 20 + 0.5,
+        satMul: (iv.satMul - 1) / 0.5 + 0.5,
+        lightAdd: iv.lightAdd / 0.1 + 0.5,
+        scale: (iv.scale - 1) / 0.1 + 0.5,
+        breathPeriod: (iv.breathPeriod - 2.4) / 0.8,
+        blinkBase: (iv.blinkBase - 3) / 4,
+        chatty: iv.chatty,
+        linePick: iv.linePick,
+        leanPreference: (iv.leanPreference - 0.7) / 0.6,
+        sleepiness: iv.sleepiness,
+        socialDistance: (iv.socialDistance - 0.85) / 0.3,
+      };
+    };
+    for (const seed of [0, 0.13, 0.37, 0.5, 0.71, 0.99]) {
+      const entries = Object.entries(slots(seed));
+      for (let i = 0; i < entries.length; i++) {
+        for (let j = i + 1; j < entries.length; j++) {
+          expect(
+            Math.abs(entries[i][1] - entries[j][1]),
+            `seed=${seed}: ${entries[i][0]} と ${entries[j][0]} が同じハッシュ枠を使っている`
+          ).toBeGreaterThan(1e-9);
+        }
+      }
+    }
+  });
 });
 
 describe("shiftHue", () => {
