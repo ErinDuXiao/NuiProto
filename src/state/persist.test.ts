@@ -105,9 +105,18 @@ describe("persist", () => {
   });
 
   it("logが配列でなければ空にする", () => {
+    // 同上: instances が空だと parseV2 が null になり sanitizeLog を通らない。
+    // 有効な個体を1匹入れて実際に sanitizeLog が動く経路にする。
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ version: 2, instances: [], log: "oops" })
+      JSON.stringify({
+        version: 2,
+        instances: [
+          { instanceId: "a", plushTypeId: "bear_01", acquiredAt: 1, x: 120, shelfRow: 1,
+            personalitySeed: 0.5, attemptsToAcquire: null, witnessedBy: null, origin: "starter" },
+        ],
+        log: "oops",
+      })
     );
     expect(loadSave().log).toEqual([]);
   });
@@ -335,9 +344,20 @@ describe("persist / v1 からの移行", () => {
   });
 
   it("neighborSince が壊れていても落ちない", () => {
+    // instances を空にすると parseV2 が null を返して initialSave にすり替わり、
+    // sanitizeNeighborSince が一度も呼ばれないまま素通りしてしまう。
+    // 有効な個体を1匹入れて parseV2 を実際に通し、サニタイズを働かせる。
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ version: 2, instances: [], neighborSince: "nope", log: [] })
+      JSON.stringify({
+        version: 2,
+        instances: [
+          { instanceId: "a", plushTypeId: "bear_01", acquiredAt: 1, x: 120, shelfRow: 1,
+            personalitySeed: 0.5, attemptsToAcquire: null, witnessedBy: null, origin: "starter" },
+        ],
+        neighborSince: "nope",
+        log: [],
+      })
     );
     expect(loadSave().neighborSince).toEqual({});
   });
