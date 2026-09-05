@@ -554,10 +554,24 @@ export function resolveWin(
   crane: Crane,
   won: FallenPrize,
   watcherInstanceId: string | null
-): { plushTypeId: string; attemptsToAcquire: number; witnessedBy: string | null } {
+): { plushTypeId: string; attemptsToAcquire: number | null; witnessedBy: string | null } {
   return {
     plushTypeId: won.defId,
-    attemptsToAcquire: Math.max(1, crane.attemptsOnBoard),
+    /*
+     * 0 回は「1 回目で取れた」ではなく「分からない」。
+     *
+     * DROP を一度もしていないのに獲得が成立する経路が実在する。
+     * 壊れた（あるいは細工された）保存から出口の中に景品が復元されると、
+     * 最初の物理ステップで落ちて won になる。そこで 1 に丸めると
+     * 「1回目で取れた子」という起きていない出来事を書き込むことになり、
+     * プロフィールがその嘘をそのまま読み上げる。
+     *
+     * **分からない来歴は捏造せず null にする。** PlushInstance の
+     * attemptsToAcquire は元から number | null で、v1 移行分や starter を
+     * 「不明」として表せるようになっている。ここもその表現に合わせる。
+     * 1 に戻してはいけない。
+     */
+    attemptsToAcquire: crane.attemptsOnBoard > 0 ? crane.attemptsOnBoard : null,
     witnessedBy: watcherInstanceId,
   };
 }

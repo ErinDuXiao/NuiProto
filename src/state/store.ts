@@ -151,7 +151,8 @@ export const store = {
    */
   winPlush(input: {
     plushTypeId: string;
-    attemptsToAcquire: number;
+    /** 何回目で取れたか。null = 分からない。分からないものを数で埋めない */
+    attemptsToAcquire: number | null;
     witnessedBy: string | null;
   }): string {
     // 未知の plushTypeId ならここで落ちる。状態を触る前に検証する。

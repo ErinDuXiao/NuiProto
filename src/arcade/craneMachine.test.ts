@@ -13,16 +13,16 @@ import {
 import { step, DEFAULT_PIT, STEP, exitDistance, atRest, type Body } from "./physics";
 import { getPlush } from "../data/plushies";
 
-const prize = (x: number, z: number, id = "p1"): Body => ({
+const prize = (x: number, z: number, id = "p1", defId = "rabbit_01"): Body => ({
   id,
-  defId: "rabbit_01",
+  defId,
   x,
   z,
   y: 0,
   vx: 0,
   vy: 0,
   vz: 0,
-  r: getPlush("rabbit_01").size,
+  r: getPlush(defId).size,
   spin: 0,
   held: false,
 });
@@ -306,6 +306,67 @@ describe("決定論的な最終配置が別の景品を出口へ押し込まな�
       }
     }
     expect(all.filter((e) => e.kind === "won").map((e) => e.bodyId)).toContain("p1");
+  });
+});
+
+describe("acquire() が出す won イベント", () => {
+  /**
+   * 状態機械の acquire() が出した won **だけ**を集める。
+   *
+   * 物理の fallen は捨てる。両方を混ぜると、acquire() が defId を
+   * 落としていても物理由来の won が代わりに立ってテストが通ってしまう。
+   */
+  function craneWon(c: Crane, bodies: Body[], ax: number, az: number): CraneEvent[] {
+    c.armX = ax;
+    c.armZ = az;
+    startDrop(c, bodies, DEFAULT_PIT);
+    const won: CraneEvent[] = [];
+    let flush = -1;
+    for (let i = 0; i < 120 * 30; i++) {
+      step(bodies, DEFAULT_PIT, STEP);
+      for (const e of tickCrane(c, bodies, DEFAULT_PIT, STEP)) {
+        if (e.kind === "won") won.push(e);
+      }
+      if (flush >= 0) {
+        if (++flush >= 40) return won;
+      } else if (c.state === "idle" && atRest(bodies)) {
+        flush = 0;
+      }
+    }
+    return won;
+  }
+
+  /**
+   * 種類を運ばない won は画面側で解決できない。
+   *
+   * ArcadeScreen はそれを握り潰すしかなく、景品も来歴も得られないまま
+   * 「獲得した」状態だけが残って操作不能になる。CraneEvent.defId は型として
+   * optional なので、型検査ではこの取りこぼしを防げない。ここで実物を見る。
+   *
+   * step() は y<=0.5 で出口内の景品を tickCrane より先に取り除くため、
+   * 素直に転がり込んだ景品は物理由来の fallen になり acquire() を通らない。
+   * acquire() が実際に走るのは「最後の手段」の placeTowardExit が
+   * "acquired" を返す経路である（settle 内の出口判定は step に先取りされる）。
+   */
+  it("acquire() 由来の won は必ず種類を運ぶ", () => {
+    // 出口距離が exit.r + MIN_ADVANCE ちょうどの帯では、
+    // 最後の手段の goal が exit.r と一致し placeTowardExit が "acquired" を返す。
+    // 隣の景品に弾かれて転がりでは詰め切れないと、この経路に落ちる。
+    const D = DEFAULT_PIT.exit.r + MIN_ADVANCE;
+    const bodies = [
+      prize(DEFAULT_PIT.exit.x + D, DEFAULT_PIT.exit.z, "p1"),
+      prize(DEFAULT_PIT.exit.x, DEFAULT_PIT.exit.z + 44, "blocker"),
+    ];
+    const evs = craneWon(createCrane(), bodies, 9999, 9999);
+
+    const mine = evs.filter((e) => e.bodyId === "p1");
+    expect(
+      mine.length,
+      "acquire() 経由の won が出ていない。テストの前提が崩れている"
+    ).toBeGreaterThanOrEqual(1);
+    for (const e of mine) {
+      expect(e.defId, "acquire() の won に種類が乗っていない").toBe("rabbit_01");
+    }
   });
 });
 

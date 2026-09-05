@@ -116,6 +116,35 @@ describe("来歴が実フローを通して正しく保存される", () => {
     const { crane, won } = winOnAttempt(1);
     expect(resolveWin(crane, won, null).witnessedBy).toBeNull();
   });
+
+  /**
+   * DROP を一度もしていない獲得は「1回目で取れた」ではない。
+   *
+   * 壊れた（あるいは細工された）保存から出口の中に景品が復元されると、
+   * 最初の物理ステップで落ちて won が立つ。ここで 1 に丸めると
+   * 起きていない出来事を来歴として書き込むことになる。
+   * 分からないものは分からないまま（null）保存する。
+   */
+  it("DROP せずに獲得が成立した場合、取れた回数は 1 ではなく null で保存される", () => {
+    // 出口の内側に復元された景品。物理の最初のステップで落ちる
+    const bodies = [prize(DEFAULT_PIT.exit.x, DEFAULT_PIT.exit.z)];
+    const crane = createCrane();
+    expect(crane.attemptsOnBoard, "DROP していないので 0 のはず").toBe(0);
+
+    let won: FallenPrize | null = null;
+    for (let i = 0; i < 10 && !won; i++) {
+      for (const f of step(bodies, DEFAULT_PIT, STEP).fallen) won ??= f;
+    }
+    expect(won, "出口の中の景品が落ちていない。前提が崩れている").not.toBeNull();
+
+    expect(resolveWin(crane, won!, null).attemptsToAcquire).toBeNull();
+
+    const id = commitWin(crane, won!, null);
+    expect(
+      store.get().instances.find((i) => i.instanceId === id)!.attemptsToAcquire,
+      "分からない来歴を 1 と捏造している"
+    ).toBeNull();
+  });
 });
 
 describe("commitWin の順序", () => {
@@ -187,7 +216,12 @@ describe("獲得したあとの盤面", () => {
       const lead = bodies.find((b) => b.id === "rabbit_01#0")!;
       won = runAttempt(crane, bodies, lead.x, lead.z);
     }
-    expect(won, "4回以内に取れなかった").not.toBeNull();
+    // 「4回以内に取れる」は**同じ景品を継続して狙った場合に限る**保証である。
+    // このループは毎回 rabbit_01#0 を狙い直しているのでその条件を満たす。
+    expect(
+      won,
+      "同じ景品を継続して狙っても4回以内に取れなかった（保証の条件は同一景品の継続狙い）"
+    ).not.toBeNull();
     expect(
       bodies.length,
       "他の景品が残っていないと、この不具合は再現しない"

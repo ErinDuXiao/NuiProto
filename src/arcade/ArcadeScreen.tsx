@@ -217,9 +217,15 @@ export function ArcadeScreen({ onGoShelf, debugPhysics, showFps }: Props) {
         break;
       case "won": {
         if (wonRef.current) break;
+        // **来歴を解決できてから「獲得した」を立てる。**
+        // 先に立てると、defId の無い won が来たときに景品も来歴も得られないまま
+        // wonRef だけが true で残り、canSaveBoard が永久に false、
+        // 棚へ帰るタイマーも張られず、狙いにも戻れない詰みになる。
+        // CraneEvent.defId は型として optional なので、将来 won を投げる箇所が
+        // 増えれば型検査を通り抜けてここへ来うる（仕様 4.4）。
+        if (!e.bodyId || !e.defId) break;
         wonRef.current = true;
         sfx.success();
-        if (!e.bodyId || !e.defId) break;
         // 来歴の組み立てと保存順序は commitWin に閉じ込めてある。
         // 画面側で attemptsOnBoard を読むと、その一行がテストの届かない
         // 場所に置かれることになる（仕様 4.4）。
