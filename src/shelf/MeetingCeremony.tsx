@@ -5,24 +5,24 @@ import { pickLine } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
 import { NEUTRAL_POSE, plushTop } from "../render/pose";
 import { useGame } from "../state/store";
-import type { OwnedPlush, PlushDef } from "../state/types";
+import type { PlushDef, PlushInstance } from "../state/types";
 import { ceremonyAt, ceremonyDuration, pickHost, type CeremonyPhase } from "./ceremonyTimeline";
 import { SHELF, rowY } from "./shelfLayout";
 
 export type Ceremony = {
   active: boolean;
   phase: CeremonyPhase;
-  host?: OwnedPlush;
-  guest?: OwnedPlush;
+  host?: PlushInstance;
+  guest?: PlushInstance;
   /** 演出が描画を受け持つ個体。棚側はこれらを描かない（二重描画の防止） */
-  stagedUids: Set<string>;
+  stagedIds: Set<string>;
   skip: () => void;
 };
 
 const IDLE: Ceremony = {
   active: false,
   phase: ceremonyAt(0, true),
-  stagedUids: new Set(),
+  stagedIds: new Set(),
   skip: () => {},
 };
 
@@ -37,44 +37,44 @@ const IDLE: Ceremony = {
  * ぬいぐるみが棚板から浮いてしまうため、必ず同じ SVG に描く。
  */
 export function useCeremony(
-  guestUid: string | null,
+  guestId: string | null,
   isFirstMeeting: boolean,
   onDone: (skipped: boolean) => void
 ): Ceremony {
   const game = useGame();
   const [phase, setPhase] = useState<CeremonyPhase>(IDLE.phase);
-  /** 完了済みの guestUid。同じ個体の演出を二度走らせないための番人 */
+  /** 完了済みの guestId。同じ個体の演出を二度走らせないための番人 */
   const doneRef = useRef<string | null>(null);
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
 
-  const guest = guestUid ? game.owned.find((o) => o.uid === guestUid) : undefined;
+  const guest = guestId ? game.instances.find((o) => o.instanceId === guestId) : undefined;
   const host = useMemo(
-    () => (guestUid ? pickHost(game.owned, guestUid) : undefined),
-    [game.owned, guestUid]
+    () => (guestId ? pickHost(game.instances, guestId) : undefined),
+    [game.instances, guestId]
   );
 
   const duration = ceremonyDuration(isFirstMeeting);
-  const playable = Boolean(guestUid && guest && guest.shelfRow >= 0 && host);
+  const playable = Boolean(guestId && guest && guest.shelfRow >= 0 && host);
 
   // 同じ子が続けて迎え役になっても毎回同じことを言わないように、
   // 個体の seed と現在の所持数からセリフを選ぶ（仕様8章）。
   const lines = useMemo(
     () => ({
-      host: pickLine("welcomeHost", host?.seed ?? 0, game.owned.length),
-      guest: pickLine("welcomeGuest", guest?.seed ?? 0, game.owned.length),
+      host: pickLine("welcomeHost", host?.personalitySeed ?? 0, game.instances.length),
+      guest: pickLine("welcomeGuest", guest?.personalitySeed ?? 0, game.instances.length),
     }),
-    [host?.seed, guest?.seed, game.owned.length]
+    [host?.personalitySeed, guest?.personalitySeed, game.instances.length]
   );
   const linesRef = useRef(lines);
   linesRef.current = lines;
 
   useEffect(() => {
-    if (!guestUid || doneRef.current === guestUid) return;
+    if (!guestId || doneRef.current === guestId) return;
 
     // 迎える相手が居ない／新入りが箱の中／rAF が無い環境では演出せず即座に終える
     if (!playable || typeof requestAnimationFrame !== "function") {
-      doneRef.current = guestUid;
+      doneRef.current = guestId;
       onDoneRef.current(false);
       return;
     }
@@ -85,8 +85,8 @@ export function useCeremony(
     let landed = false;
 
     const finish = () => {
-      if (doneRef.current === guestUid) return;
-      doneRef.current = guestUid;
+      if (doneRef.current === guestId) return;
+      doneRef.current = guestId;
       onDoneRef.current(false);
     };
 
@@ -112,24 +112,24 @@ export function useCeremony(
       cancelAnimationFrame(raf);
       window.clearTimeout(finishTimer);
     };
-  }, [guestUid, isFirstMeeting, duration, playable]);
+  }, [guestId, isFirstMeeting, duration, playable]);
 
-  const stagedUids = useMemo(() => {
-    if (!guestUid || !playable) return new Set<string>();
-    return new Set(host ? [guestUid, host.uid] : [guestUid]);
-  }, [guestUid, playable, host]);
+  const stagedIds = useMemo(() => {
+    if (!guestId || !playable) return new Set<string>();
+    return new Set(host ? [guestId, host.instanceId] : [guestId]);
+  }, [guestId, playable, host]);
 
-  if (!guestUid || !playable) return IDLE;
+  if (!guestId || !playable) return IDLE;
 
   return {
     active: true,
     phase,
     host,
     guest,
-    stagedUids,
+    stagedIds,
     skip: () => {
-      if (doneRef.current === guestUid) return;
-      doneRef.current = guestUid;
+      if (doneRef.current === guestId) return;
+      doneRef.current = guestId;
       setPhase(ceremonyAt(duration, isFirstMeeting, linesRef.current));
       onDoneRef.current(true);
     },
@@ -144,8 +144,8 @@ export function CeremonyActors({ ceremony }: { ceremony: Ceremony }) {
   const { phase, host, guest } = ceremony;
   if (!ceremony.active || !host || !guest) return null;
 
-  const guestDef = getPlush(guest.defId);
-  const hostDef = getPlush(host.defId);
+  const guestDef = getPlush(guest.plushTypeId);
+  const hostDef = getPlush(host.plushTypeId);
   const guestY = rowY(guest.shelfRow);
   const hostY = rowY(host.shelfRow);
   const lookDir = Math.sign(guest.x - host.x) || 1;
@@ -162,7 +162,7 @@ export function CeremonyActors({ ceremony }: { ceremony: Ceremony }) {
             tilt: phase.hostLook * lookDir * 5,
             hop: phase.hostHop,
           }}
-          seed={host.seed}
+          seed={host.personalitySeed}
         />
       </g>
 
@@ -176,7 +176,7 @@ export function CeremonyActors({ ceremony }: { ceremony: Ceremony }) {
             hop: phase.guestDrop + phase.guestHop,
             lookAt: phase.guestHop > 0 ? -lookDir * 0.6 : 0,
           }}
-          seed={guest.seed}
+          seed={guest.personalitySeed}
         />
         {phase.sparkle && <Sparkle r={guestDef.size} />}
       </g>

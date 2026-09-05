@@ -1,7 +1,23 @@
 import { hasPlush } from "../data/plushies";
 import { LOG_LIMIT } from "./log";
-import type { CraneBoardSave, LogEvent, LogEventType, OwnedPlush, SaveV1 } from "./types";
+import { migrateV1 } from "./migrate";
+import type {
+  CraneBoardSave,
+  LogEvent,
+  LogEventType,
+  PlushInstance,
+  PlushOrigin,
+  SaveV1Raw,
+  SaveV2,
+} from "./types";
 
+/**
+ * 保存キー。**変えない。**
+ *
+ * 名前に v1 が入っているのは前フェーズの名残であり、スキーマの
+ * バージョンとは無関係。キーを変えると既存プレイヤーの棚を
+ * 見失う。バージョンは中の `version` フィールドで判定する（仕様 4.2.1）。
+ */
 export const STORAGE_KEY = "plushcrane.v1";
 
 /**
@@ -19,7 +35,7 @@ export const SLOT_X0 = 78;
 export const SLOT_SPACING = 82;
 
 /** 最初の子。プレイヤーは起動した瞬間からひとりではない。 */
-const STARTER_DEF_ID = "bear_01";
+const STARTER_TYPE_ID = "bear_01";
 
 function num(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
@@ -30,57 +46,117 @@ function clampCount(v: number): number {
   return Math.max(0, Math.min(1e9, Math.round(v)));
 }
 
-function makeUid(): string {
+function makeInstanceId(): string {
   return `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function initialSave(): SaveV1 {
+export function initialSave(): SaveV2 {
   return {
-    version: 1,
+    version: 2,
     sessionCount: 0,
-    owned: [
+    instances: [
       {
-        uid: makeUid(),
-        defId: STARTER_DEF_ID,
+        instanceId: makeInstanceId(),
+        plushTypeId: STARTER_TYPE_ID,
         acquiredAt: Date.now(),
+        // 最初からここにいた子。試行回数も見守り役も存在しない。
+        attemptsToAcquire: null,
+        witnessedBy: null,
+        origin: "starter",
         // 格子スロット上、真ん中の段の中央に置く
         x: 160,
         shelfRow: 1,
-        seed: Math.random(),
+        personalitySeed: Math.random(),
       },
     ],
     craneBoard: null,
     attempts: 0,
     pendingWelcome: null,
     firstMeetingDone: false,
+    neighborSince: {},
     log: [],
   };
 }
 
 /** 所持品の上限。これを超える保存データは壊れているか作為的なもの。 */
-const MAX_OWNED = 200;
+const MAX_INSTANCES = 200;
 /** 盤面の景品数の上限。 */
 const MAX_PRIZES = 40;
+/**
+ * 隣接リンクの上限。棚に出せるのは 12 匹で、各個体は最寄りの
+ * 1 匹としかリンクしないので実際の上界は 24 本（仕様 4.1.1）。
+ * 壊れた保存データで無制限に育たないよう、余裕を見て切る。
+ */
+const MAX_NEIGHBOR_LINKS = 64;
 
-function sanitizeOwned(raw: unknown): OwnedPlush[] {
+const ORIGINS = new Set<PlushOrigin>(["starter", "crane", "granted", "unknown"]);
+
+/** 段を有効な範囲へ収める。負はすべて -1（箱の中）。 */
+function clampRow(raw: unknown): number {
+  const row = Math.round(num(raw, 0));
+  return row < 0 ? -1 : Math.min(row, SHELF_ROWS - 1);
+}
+
+/** 試行回数。分からない場合は捏造せず null のまま残す。 */
+function sanitizeAttempts(raw: unknown): number | null {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+  return Math.max(0, Math.min(9999, Math.round(raw)));
+}
+
+/**
+ * v2 の所持品を検証する。
+ *
+ * 知らない `origin` は捨てずに `"unknown"` へ落とす。個体を消すより、
+ * 来歴が分からない状態で残すほうがこのゲームでは正しい。
+ */
+function sanitizeInstances(raw: unknown): PlushInstance[] {
   if (!Array.isArray(raw)) return [];
-  const out: OwnedPlush[] = [];
+  const out: PlushInstance[] = [];
   const seen = new Set<string>();
-  for (const item of raw.slice(0, MAX_OWNED)) {
+  for (const item of raw.slice(0, MAX_INSTANCES)) {
+    if (typeof item !== "object" || item === null) continue;
+    const o = item as Record<string, unknown>;
+    if (typeof o.plushTypeId !== "string" || !hasPlush(o.plushTypeId)) continue;
+    // instanceId が重複すると pendingWelcome やドラッグの対象が曖昧になるので振り直す
+    let id =
+      typeof o.instanceId === "string" && o.instanceId
+        ? o.instanceId.slice(0, 64)
+        : makeInstanceId();
+    if (seen.has(id)) id = makeInstanceId();
+    seen.add(id);
+    out.push({
+      instanceId: id,
+      plushTypeId: o.plushTypeId,
+      acquiredAt: num(o.acquiredAt, Date.now()),
+      attemptsToAcquire: sanitizeAttempts(o.attemptsToAcquire),
+      witnessedBy: typeof o.witnessedBy === "string" ? o.witnessedBy.slice(0, 64) : null,
+      origin: ORIGINS.has(o.origin as PlushOrigin) ? (o.origin as PlushOrigin) : "unknown",
+      x: Math.min(2000, Math.max(-2000, num(o.x, 160))),
+      shelfRow: clampRow(o.shelfRow),
+      personalitySeed: Math.min(1, Math.max(0, num(o.personalitySeed, Math.random()))),
+    });
+  }
+  return out;
+}
+
+/** v1 の所持品を検証する。移行のためだけに存在する。 */
+function sanitizeOwnedV1(raw: unknown): SaveV1Raw["owned"] {
+  if (!Array.isArray(raw)) return [];
+  const out: SaveV1Raw["owned"] = [];
+  const seen = new Set<string>();
+  for (const item of raw.slice(0, MAX_INSTANCES)) {
     if (typeof item !== "object" || item === null) continue;
     const o = item as Record<string, unknown>;
     if (typeof o.defId !== "string" || !hasPlush(o.defId)) continue;
-    const row = Math.round(num(o.shelfRow, 0));
-    // uid が重複すると pendingWelcome やドラッグの対象が曖昧になるので振り直す
-    let uid = typeof o.uid === "string" && o.uid ? o.uid.slice(0, 64) : makeUid();
-    if (seen.has(uid)) uid = makeUid();
+    let uid = typeof o.uid === "string" && o.uid ? o.uid.slice(0, 64) : makeInstanceId();
+    if (seen.has(uid)) uid = makeInstanceId();
     seen.add(uid);
     out.push({
       uid,
       defId: o.defId,
       acquiredAt: num(o.acquiredAt, Date.now()),
       x: Math.min(2000, Math.max(-2000, num(o.x, 160))),
-      shelfRow: row < 0 ? -1 : Math.min(row, SHELF_ROWS - 1),
+      shelfRow: clampRow(o.shelfRow),
       seed: Math.min(1, Math.max(0, num(o.seed, Math.random()))),
     });
   }
@@ -95,6 +171,7 @@ function sanitizeBoard(raw: unknown): CraneBoardSave | null {
   for (const item of b.prizes.slice(0, MAX_PRIZES)) {
     if (typeof item !== "object" || item === null) continue;
     const p = item as Record<string, unknown>;
+    // 盤面の景品は個体ではなく種類なので defId のまま。改名しない。
     if (typeof p.defId !== "string" || !hasPlush(p.defId)) continue;
     prizes.push({
       defId: p.defId,
@@ -106,6 +183,36 @@ function sanitizeBoard(raw: unknown): CraneBoardSave | null {
   return { prizes, attemptsOnBoard: Math.min(9999, clampCount(num(b.attemptsOnBoard, 0))) };
 }
 
+/**
+ * 隣接の記録を検証する。
+ *
+ * 実在しない個体を指すキーは捨てる。棚から居なくなった子との
+ * 「隣にいた時間」が残り続けると、関係の演出が幽霊を相手にする。
+ */
+function sanitizeNeighborSince(
+  raw: unknown,
+  ids: Set<string>
+): Record<string, number> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+  const out: Record<string, number> = {};
+  let n = 0;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (n >= MAX_NEIGHBOR_LINKS) break;
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    const pair = key.split("|");
+    if (pair.length !== 2) continue;
+    if (!ids.has(pair[0]) || !ids.has(pair[1])) continue;
+    out[key] = value;
+    n++;
+  }
+  return out;
+}
+
+/**
+ * 保存で受け付けるイベント種別。
+ * **`LogEventType` に足したら必ずここにも足す。**
+ * 片方だけだと型検査は通るのにリロードで消える。
+ */
 const LOG_TYPES = new Set<LogEventType>([
   "session_start",
   "shelf_view",
@@ -124,6 +231,15 @@ const LOG_TYPES = new Set<LogEventType>([
   "welcome_played",
   "plush_touched",
   "shelf_dwell",
+  "plush_profile_opened",
+  "plush_drag_start",
+  "plush_drag_end",
+  "neighbor_created",
+  "neighbor_removed",
+  "relationship_reaction",
+  "shelf_idle_10s",
+  "shelf_idle_30s",
+  "shelf_return_after_win",
 ]);
 
 function sanitizeMeta(raw: unknown): LogEvent["meta"] {
@@ -164,36 +280,50 @@ function sanitizeLog(raw: unknown): LogEvent[] {
 }
 
 /**
- * 保存データを読む。壊れていたら黙って壊れた状態で起動せず、初期状態に戻す。
- * localStorage 自体が使えない環境（プライベートモード等）でも例外を投げない。
+ * v2 として読む。読めなければ null。
+ *
+ * 所持品が1匹も残らなかったら null を返す。空の部屋を見せるより、
+ * 最初の1匹がいる状態からやり直すほうがこのゲームでは正しい。
  */
-export function loadSave(): SaveV1 {
-  let raw: string | null = null;
-  try {
-    raw = localStorage.getItem(STORAGE_KEY);
-  } catch {
-    return initialSave();
-  }
-  if (!raw) return initialSave();
+export function parseV2(raw: unknown): SaveV2 | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const s = raw as Record<string, unknown>;
+  if (s.version !== 2) return null;
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return initialSave();
-  }
-  if (typeof parsed !== "object" || parsed === null) return initialSave();
+  const instances = sanitizeInstances(s.instances);
+  if (instances.length === 0) return null;
 
-  const s = parsed as Record<string, unknown>;
-  if (s.version !== 1) return initialSave();
-
-  const owned = sanitizeOwned(s.owned);
-  // 所持品が1匹も残らなかったら空の部屋を見せずに最初からやり直す
-  if (owned.length === 0) return initialSave();
-
-  const ownedUids = new Set(owned.map((o) => o.uid));
+  const ids = new Set(instances.map((i) => i.instanceId));
   const pending =
-    typeof s.pendingWelcome === "string" && ownedUids.has(s.pendingWelcome)
+    typeof s.pendingWelcome === "string" && ids.has(s.pendingWelcome)
+      ? s.pendingWelcome
+      : null;
+
+  return {
+    version: 2,
+    sessionCount: clampCount(num(s.sessionCount, 0)),
+    instances,
+    craneBoard: sanitizeBoard(s.craneBoard),
+    attempts: clampCount(num(s.attempts, 0)),
+    pendingWelcome: pending,
+    firstMeetingDone: s.firstMeetingDone === true,
+    neighborSince: sanitizeNeighborSince(s.neighborSince, ids),
+    log: sanitizeLog(s.log),
+  };
+}
+
+/** v1 として読む。読めなければ null。移行のためだけに使う。 */
+export function parseV1(raw: unknown): SaveV1Raw | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const s = raw as Record<string, unknown>;
+  if (s.version !== 1) return null;
+
+  const owned = sanitizeOwnedV1(s.owned);
+  if (owned.length === 0) return null;
+
+  const uids = new Set(owned.map((o) => o.uid));
+  const pending =
+    typeof s.pendingWelcome === "string" && uids.has(s.pendingWelcome)
       ? s.pendingWelcome
       : null;
 
@@ -210,10 +340,50 @@ export function loadSave(): SaveV1 {
 }
 
 /**
+ * 保存データを読む。壊れていたら黙って壊れた状態で起動せず、初期状態に戻す。
+ * localStorage 自体が使えない環境（プライベートモード等）でも例外を投げない。
+ *
+ * 順序は仕様 4.2.1 のとおり。v1 を読んだら移行して**即座に書き戻す**。
+ * 書き戻さないと、次回の起動でも毎回移行が走り、移行後に足した情報
+ * （来歴・隣接の記録）が保存のたびに古い形と競合する。
+ */
+export function loadSave(): SaveV2 {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return initialSave();
+  }
+  if (!raw) return initialSave();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return initialSave();
+  }
+  if (typeof parsed !== "object" || parsed === null) return initialSave();
+
+  const version = (parsed as Record<string, unknown>).version;
+
+  if (version === 2) return parseV2(parsed) ?? initialSave();
+
+  if (version === 1) {
+    const v1 = parseV1(parsed);
+    if (!v1) return initialSave();
+    const v2 = migrateV1(v1);
+    writeSave(v2);
+    return v2;
+  }
+
+  return initialSave();
+}
+
+/**
  * 保存する。容量超過や書き込み禁止でもアプリを落とさない。
  * @returns 保存できたか。呼び出し側はこれを見て「保存されていない」ことを検知できる。
  */
-export function writeSave(s: SaveV1): boolean {
+export function writeSave(s: SaveV2): boolean {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
     return true;
@@ -231,4 +401,4 @@ export function clearSave(): void {
   }
 }
 
-export { makeUid };
+export { makeInstanceId };

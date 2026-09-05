@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { getPlush, hasPlush } from "../data/plushies";
 import { PlushSVG } from "../render/PlushSVG";
 import { NEUTRAL_POSE } from "../render/pose";
-import type { OwnedPlush } from "../state/types";
+import type { PlushInstance } from "../state/types";
 import { SHELF, rowY } from "../shelf/shelfLayout";
 
 /**
@@ -19,7 +19,8 @@ const GAME_NAME = "ぬいぐるみのおうち";
 
 // ---------------------------------------------------------------- 状態の直列化
 
-type Compact = [defId: string, x: number, row: number, seed: number];
+/** 共有用の圧縮形。位置と見た目だけ。来歴は他人には渡さない。 */
+type Compact = [plushTypeId: string, x: number, row: number, seed: number];
 
 function toBase64Url(s: string): string {
   const b64 = btoa(unescape(encodeURIComponent(s)));
@@ -45,11 +46,16 @@ const MAX_ENCODED = 64;
 /** 復元を受け付ける最大文字数。 */
 const MAX_ENCODED_CHARS = 8192;
 
-export function encodeShelf(owned: OwnedPlush[]): string {
-  const compact: Compact[] = owned
+export function encodeShelf(instances: PlushInstance[]): string {
+  const compact: Compact[] = instances
     .filter((o) => o.shelfRow >= 0)
     .slice(0, MAX_ENCODED)
-    .map((o) => [o.defId, Math.round(o.x), o.shelfRow, Math.round(o.seed * 1000) / 1000]);
+    .map((o) => [
+      o.plushTypeId,
+      Math.round(o.x),
+      o.shelfRow,
+      Math.round(o.personalitySeed * 1000) / 1000,
+    ]);
   try {
     return toBase64Url(JSON.stringify(compact));
   } catch {
@@ -57,7 +63,7 @@ export function encodeShelf(owned: OwnedPlush[]): string {
   }
 }
 
-export function decodeShelf(s: string): OwnedPlush[] | null {
+export function decodeShelf(s: string): PlushInstance[] | null {
   if (!s || s.length > MAX_ENCODED_CHARS) return null;
   if (!/^[A-Za-z0-9\-_]*$/.test(s)) return null;
   let parsed: unknown;
@@ -68,22 +74,26 @@ export function decodeShelf(s: string): OwnedPlush[] | null {
   }
   if (!Array.isArray(parsed)) return null;
 
-  const out: OwnedPlush[] = [];
+  const out: PlushInstance[] = [];
   for (const [i, item] of parsed.slice(0, MAX_ENCODED).entries()) {
     if (!Array.isArray(item)) continue;
-    const [defId, x, row, seed] = item as Compact;
-    if (typeof defId !== "string" || !hasPlush(defId)) continue;
+    const [plushTypeId, x, row, seed] = item as Compact;
+    if (typeof plushTypeId !== "string" || !hasPlush(plushTypeId)) continue;
     // 有限で、段は整数であること。1.5 段や巨大な x を通さない。
     if (typeof x !== "number" || !Number.isFinite(x) || Math.abs(x) > 4000) continue;
     if (typeof row !== "number" || !Number.isInteger(row)) continue;
     if (row < 0 || row >= SHELF.rows) continue;
     out.push({
-      uid: `s${i}`,
-      defId,
+      instanceId: `s${i}`,
+      plushTypeId,
       acquiredAt: 0,
+      // 他人の棚を復元しただけなので、来歴は持ち込まない
+      attemptsToAcquire: null,
+      witnessedBy: null,
+      origin: "unknown",
       x,
       shelfRow: row,
-      seed: typeof seed === "number" && Number.isFinite(seed) ? seed : 0.5,
+      personalitySeed: typeof seed === "number" && Number.isFinite(seed) ? seed : 0.5,
     });
   }
   return out;
@@ -99,8 +109,8 @@ export function decodeShelf(s: string): OwnedPlush[] | null {
  * **文字も入れない**（フォント解決の差異を避けるため、文字は canvas 側で描く）。
  * PlushSVG がこの制約を最初から守っているので、そのまま埋め込める。
  */
-export function buildShelfSvg(owned: OwnedPlush[]): string {
-  const onShelf = owned.filter((o) => o.shelfRow >= 0);
+export function buildShelfSvg(instances: PlushInstance[]): string {
+  const onShelf = instances.filter((o) => o.shelfRow >= 0);
 
   // 棚の座標系 (320 x 573) を画面の中央に収める
   const roomW = SHELF.width;
@@ -112,7 +122,7 @@ export function buildShelfSvg(owned: OwnedPlush[]): string {
   const plushMarkup = onShelf
     .map((o) => {
       const inner = renderToStaticMarkup(
-        PlushSVG({ def: getPlush(o.defId), pose: NEUTRAL_POSE, seed: o.seed })
+        PlushSVG({ def: getPlush(o.plushTypeId), pose: NEUTRAL_POSE, seed: o.personalitySeed })
       );
       return `<g transform="translate(${o.x} ${rowY(o.shelfRow)})">${inner}</g>`;
     })

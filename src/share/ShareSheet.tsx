@@ -22,10 +22,10 @@ export function ShareSheet({ onClose }: Props) {
 
   useEffect(() => {
     let alive = true;
-    store.log("share_clicked", { meta: { count: game.owned.length } });
+    store.log("share_clicked", { meta: { count: game.instances.length } });
 
-    const onShelf = game.owned.filter((o) => o.shelfRow >= 0);
-    renderShelfPng(buildShelfSvg(game.owned), onShelf.length)
+    const onShelf = game.instances.filter((o) => o.shelfRow >= 0);
+    renderShelfPng(buildShelfSvg(game.instances), onShelf.length)
       .then((blob) => {
         if (!alive) return;
         const url = URL.createObjectURL(blob);

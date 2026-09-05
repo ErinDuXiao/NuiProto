@@ -17,7 +17,7 @@ type Props = {
   onSecretTap: () => void;
 };
 
-type Bubble = { uid: string; text: string; until: number };
+type Bubble = { instanceId: string; text: string; until: number };
 
 /**
  * 棚画面 = ぬいぐるみたちが暮らしている小さな部屋。
@@ -34,15 +34,15 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
   /** 演出中はタップのリアクションを止める。コールバックを作り直さずに済ませる */
   const ceremonyActiveRef = useRef(false);
   /** touch コールバックを作り直さずに最新の所持品を読むため */
-  const ownedRef = useRef(game.owned);
-  ownedRef.current = game.owned;
+  const instancesRef = useRef(game.instances);
+  instancesRef.current = game.instances;
   /** ドラッグフックへ渡すタップ処理。実体は下で差し込む */
-  const touchRef = useRef<(uid: string) => void>(() => {});
+  const touchRef = useRef<(instanceId: string) => void>(() => {});
   /** アンマウント後に発火させないための後片付け */
   const squashTimers = useRef(new Set<number>());
   const ringTimer = useRef(0);
   /** 迎えたばかりの子。少しの間だけ淡いリングを出す（仕様8章） */
-  const [ringUid, setRingUid] = useState<string | null>(null);
+  const [ringId, setRingId] = useState<string | null>(null);
 
   useEffect(
     () => () => {
@@ -53,31 +53,39 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
     []
   );
 
-  const ceremonyUid = game.pendingWelcome;
-  const onShelf = useMemo(() => game.owned.filter((o) => o.shelfRow >= 0), [game.owned]);
+  const ceremonyId = game.pendingWelcome;
+  const onShelf = useMemo(
+    () => game.instances.filter((o) => o.shelfRow >= 0),
+    [game.instances]
+  );
 
-  const ceremony = useCeremony(ceremonyUid, !game.firstMeetingDone, (skipped) => {
+  const ceremony = useCeremony(ceremonyId, !game.firstMeetingDone, (skipped) => {
     const arrived = store.get().pendingWelcome;
     store.finishWelcome(skipped);
     if (arrived) {
-      setRingUid(arrived);
+      setRingId(arrived);
       window.clearTimeout(ringTimer.current);
-      ringTimer.current = window.setTimeout(() => setRingUid(null), 2000);
+      ringTimer.current = window.setTimeout(() => setRingId(null), 2000);
     }
   });
   ceremonyActiveRef.current = ceremony.active;
 
   const targets: AmbientTarget[] = useMemo(
     () =>
-      onShelf.map((o) => ({ uid: o.uid, seed: o.seed, x: o.x, shelfRow: o.shelfRow })),
+      onShelf.map((o) => ({
+        instanceId: o.instanceId,
+        personalitySeed: o.personalitySeed,
+        x: o.x,
+        shelfRow: o.shelfRow,
+      })),
     [onShelf]
   );
 
   const { onPointerDown, drag } = useDragPlacement({
-    owned: game.owned,
+    instances: game.instances,
     svgRef,
     enabled: !ceremony.active,
-    onTap: (uid) => touchRef.current(uid),
+    onTap: (instanceId) => touchRef.current(instanceId),
   });
 
   // 演出中・ドラッグ中は環境アニメーションを止める。
@@ -103,24 +111,28 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
   }, [bubbles]);
 
   const touch = useCallback(
-    (uid: string) => {
+    (instanceId: string) => {
       if (ceremonyActiveRef.current) return;
-      const target = ownedRef.current.find((o) => o.uid === uid);
+      const target = instancesRef.current.find((o) => o.instanceId === instanceId);
       if (!target) return;
-      const { defId, seed } = target;
+      const { plushTypeId, personalitySeed } = target;
       sfx.init();
       sfx.place();
-      store.log("plush_touched", { plushId: defId });
+      store.log("plush_touched", { plushId: plushTypeId });
       setBubbles((b) => [
-        ...b.filter((x) => x.uid !== uid),
-        { uid, text: pickLine("shelfTouch", seed, Math.floor(Date.now() / 1000)), until: Date.now() + 2200 },
+        ...b.filter((x) => x.instanceId !== instanceId),
+        {
+          instanceId,
+          text: pickLine("shelfTouch", personalitySeed, Math.floor(Date.now() / 1000)),
+          until: Date.now() + 2200,
+        },
       ]);
-      setSquashed((s) => ({ ...s, [uid]: Date.now() }));
+      setSquashed((s) => ({ ...s, [instanceId]: Date.now() }));
       const timer = window.setTimeout(() => {
         squashTimers.current.delete(timer);
         setSquashed((s) => {
           const next = { ...s };
-          delete next[uid];
+          delete next[instanceId];
           return next;
         });
       }, 460);
@@ -135,7 +147,7 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
     <div className="screen shelf">
       <header className="shelf-header">
         <span className="shelf-title">ぬいぐるみのおうち</span>
-        <span className="shelf-count">おともだち {game.owned.length}</span>
+        <span className="shelf-count">おともだち {game.instances.length}</span>
         <MuteToggle />
       </header>
 
@@ -152,30 +164,30 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
         <CeremonyActors ceremony={ceremony} />
 
         {onShelf.map((o) => {
-          if (ceremony.stagedUids.has(o.uid)) return null;
-          const def = getPlush(o.defId);
-          const dragging = drag?.uid === o.uid && drag.moved;
+          if (ceremony.stagedIds.has(o.instanceId)) return null;
+          const def = getPlush(o.plushTypeId);
+          const dragging = drag?.instanceId === o.instanceId && drag.moved;
           const x = dragging ? drag.x : o.x;
           const row = dragging ? drag.shelfRow : o.shelfRow;
           const y = rowY(row);
-          const pose = poseFor(squashed[o.uid], dragging);
-          const bubble = bubbles.find((b) => b.uid === o.uid);
+          const pose = poseFor(squashed[o.instanceId], dragging);
+          const bubble = bubbles.find((b) => b.instanceId === o.instanceId);
           return (
-            <g key={o.uid} transform={`translate(0 ${y})`} opacity={dragging ? 0.92 : 1}>
+            <g key={o.instanceId} transform={`translate(0 ${y})`} opacity={dragging ? 0.92 : 1}>
               <g
                 ref={(el) => {
                   // React は外すときに null を渡す。消さないと棚から居なくなった
                   // 個体のエントリが残り続ける
-                  if (el) refs.current.set(o.uid, el);
-                  else refs.current.delete(o.uid);
+                  if (el) refs.current.set(o.instanceId, el);
+                  else refs.current.delete(o.instanceId);
                 }}
                 transform={`translate(${x} 0)`}
-                onPointerDown={(e) => onPointerDown(o.uid, e)}
+                onPointerDown={(e) => onPointerDown(o.instanceId, e)}
                 style={{ cursor: dragging ? "grabbing" : "grab" }}
               >
-                <PlushSVG def={def} pose={pose} seed={o.seed} />
+                <PlushSVG def={def} pose={pose} seed={o.personalitySeed} />
               </g>
-              {o.uid === ringUid && <WelcomeRing x={x} r={def.size} />}
+              {o.instanceId === ringId && <WelcomeRing x={x} r={def.size} />}
               {bubble && <Bubble x={x} y={plushTop(def) - 14} text={bubble.text} />}
             </g>
           );

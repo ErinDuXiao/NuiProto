@@ -2,11 +2,11 @@ import { getPlush } from "../data/plushies";
 import { LINES, pickLine, type LineKey } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
 import { plushTop } from "../render/pose";
-import type { OwnedPlush } from "../state/types";
+import type { PlushInstance } from "../state/types";
 import { lineKeyFor, watcherPose, type WatcherMood } from "./watcherState";
 
 type Props = {
-  plush: OwnedPlush;
+  plush: PlushInstance;
   mood: WatcherMood;
   /** その気持ちになってからの経過時間 (ms) */
   elapsed: number;
@@ -22,16 +22,16 @@ type Props = {
  * 落としたときも 0.8 秒で立ち直り、悲しみを引きずらせない。
  */
 export function Watcher({ plush, mood, elapsed, moodCount }: Props) {
-  const def = getPlush(plush.defId);
+  const def = getPlush(plush.plushTypeId);
   const pose = watcherPose(mood, elapsed);
   const key = lineKeyFor(mood);
-  const line = key && key in LINES ? pickLine(key as LineKey, plush.seed, moodCount) : null;
+  const line = key && key in LINES ? pickLine(key as LineKey, plush.personalitySeed, moodCount) : null;
   const showLine = line !== null && elapsed < 2400;
 
   return (
     <g>
       <g transform="translate(52 0)">
-        <PlushSVG def={def} pose={pose} seed={plush.seed} />
+        <PlushSVG def={def} pose={pose} seed={plush.personalitySeed} />
         {mood === "success" && <Sparkle r={def.size} />}
       </g>
       {showLine && <Bubble x={52} y={plushTop(def) - 14 - pose.hop} text={line} />}

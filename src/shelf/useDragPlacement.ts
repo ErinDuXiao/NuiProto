@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getPlush } from "../data/plushies";
 import { store } from "../state/store";
-import type { OwnedPlush } from "../state/types";
+import type { PlushInstance } from "../state/types";
 import { rowFromY, snapPlacement, SHELF, type Placed } from "./shelfLayout";
 
 /** ここを超えて動いたらドラッグ。それ未満はタップ（リアクション）。 */
 const DRAG_THRESHOLD = 4;
 
 export type DragState = {
-  uid: string;
+  instanceId: string;
   x: number;
   shelfRow: number;
   /** 元の位置。置けなかったときに戻す先 */
@@ -18,12 +18,12 @@ export type DragState = {
 } | null;
 
 type Options = {
-  owned: OwnedPlush[];
+  instances: PlushInstance[];
   /** SVG 要素。画面座標を viewBox 座標に変換するのに使う */
   svgRef: React.RefObject<SVGSVGElement>;
   enabled: boolean;
   /** ドラッグにならなかった場合（タップ）に呼ばれる */
-  onTap: (uid: string) => void;
+  onTap: (instanceId: string) => void;
 };
 
 /**
@@ -35,7 +35,7 @@ type Options = {
  * 4px 動くまではタップとして扱う。ぬいぐるみを撫でる操作と
  * 動かす操作を取り違えないため。
  */
-export function useDragPlacement({ owned, svgRef, enabled, onTap }: Options) {
+export function useDragPlacement({ instances, svgRef, enabled, onTap }: Options) {
   const [drag, setDrag] = useState<DragState>(null);
   const startRef = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null);
   /** 掴んでいる指の識別子。2本目の指に乗っ取られないようにする */
@@ -65,11 +65,11 @@ export function useDragPlacement({ owned, svgRef, enabled, onTap }: Options) {
   );
 
   const onPointerDown = useCallback(
-    (uid: string, e: React.PointerEvent) => {
+    (instanceId: string, e: React.PointerEvent) => {
       if (!enabled) return;
       // 既に別の指で掴んでいる。2本目は無視する。
       if (pointerIdRef.current !== null) return;
-      const target = owned.find((o) => o.uid === uid);
+      const target = instances.find((o) => o.instanceId === instanceId);
       if (!target || target.shelfRow < 0) return;
       const local = toLocal(e.clientX, e.clientY);
       if (!local) return;
@@ -84,7 +84,7 @@ export function useDragPlacement({ owned, svgRef, enabled, onTap }: Options) {
       pointerIdRef.current = e.pointerId;
       startRef.current = { px: local.x, py: local.y, ox: target.x, oy: target.shelfRow };
       setDrag({
-        uid,
+        instanceId,
         x: target.x,
         shelfRow: target.shelfRow,
         fromX: target.x,
@@ -92,7 +92,7 @@ export function useDragPlacement({ owned, svgRef, enabled, onTap }: Options) {
         moved: false,
       });
     },
-    [enabled, owned, toLocal]
+    [enabled, instances, toLocal]
   );
 
   useEffect(() => {
@@ -137,21 +137,29 @@ export function useDragPlacement({ owned, svgRef, enabled, onTap }: Options) {
       if (!commit) return;
 
       if (!cur.moved) {
-        onTap(cur.uid);
+        onTap(cur.instanceId);
         return;
       }
 
-      const def = getPlush(owned.find((o) => o.uid === cur.uid)?.defId ?? "bear_01");
-      const others: Placed[] = owned
-        .filter((o) => o.shelfRow >= 0 && o.uid !== cur.uid)
-        .map((o) => ({ uid: o.uid, x: o.x, shelfRow: o.shelfRow, r: getPlush(o.defId).size }));
+      // Placed.uid は棚の配置計算だけが使う識別子。個体の instanceId をそのまま渡す。
+      const def = getPlush(
+        instances.find((o) => o.instanceId === cur.instanceId)?.plushTypeId ?? "bear_01"
+      );
+      const others: Placed[] = instances
+        .filter((o) => o.shelfRow >= 0 && o.instanceId !== cur.instanceId)
+        .map((o) => ({
+          uid: o.instanceId,
+          x: o.x,
+          shelfRow: o.shelfRow,
+          r: getPlush(o.plushTypeId).size,
+        }));
 
-      const placed = snapPlacement(cur.uid, cur.x, cur.shelfRow, def.size, others);
+      const placed = snapPlacement(cur.instanceId, cur.x, cur.shelfRow, def.size, others);
       if (placed.reverted) {
         // どこにも置けない。元の位置へ戻す。無言で消したり重ねたりしない。
-        store.movePlush(cur.uid, cur.fromX, cur.fromRow);
+        store.movePlush(cur.instanceId, cur.fromX, cur.fromRow);
       } else {
-        store.movePlush(cur.uid, placed.x, placed.shelfRow);
+        store.movePlush(cur.instanceId, placed.x, placed.shelfRow);
       }
     };
 
@@ -168,7 +176,7 @@ export function useDragPlacement({ owned, svgRef, enabled, onTap }: Options) {
       // ドラッグ中にアンマウントされた場合、掴んだ指を解放しておく
       pointerIdRef.current = null;
     };
-  }, [drag !== null, owned, toLocal, onTap]);
+  }, [drag !== null, instances, toLocal, onTap]);
 
   return { onPointerDown, drag };
 }

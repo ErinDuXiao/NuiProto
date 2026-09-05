@@ -2,8 +2,8 @@ import { useEffect, type RefObject } from "react";
 import { individuality } from "./pose";
 
 export type AmbientTarget = {
-  uid: string;
-  seed: number;
+  instanceId: string;
+  personalitySeed: number;
   /** 棚上の水平位置。隣を見る演出の向き判定に使う */
   x: number;
   shelfRow: number;
@@ -58,7 +58,9 @@ export function useAmbientLife(
   enabled: boolean
 ): void {
   // targets は毎レンダー新しい配列になるので、比較用のキーで依存を安定させる
-  const key = targets.map((t) => `${t.uid}:${t.seed.toFixed(4)}:${t.x}:${t.shelfRow}`).join("|");
+  const key = targets
+    .map((t) => `${t.instanceId}:${t.personalitySeed.toFixed(4)}:${t.x}:${t.shelfRow}`)
+    .join("|");
 
   useEffect(() => {
     if (!enabled) return;
@@ -68,23 +70,27 @@ export function useAmbientLife(
     if (list.length === 0) return;
 
     const now = performance.now();
-    const lives = new Map<string, Life>(list.map((t) => [t.uid, makeLife(t.seed, now)]));
+    const lives = new Map<string, Life>(
+      list.map((t) => [t.instanceId, makeLife(t.personalitySeed, now)])
+    );
 
     // 隣にいる子。いなければ登録しない
     const neighborDir = new Map<string, number>();
     /** 隣が近いほど 1 に近い。寄りかかりの強さに使う */
     const closeness = new Map<string, number>();
     for (const t of list) {
-      const sameRow = list.filter((o) => o.uid !== t.uid && o.shelfRow === t.shelfRow);
+      const sameRow = list.filter(
+        (o) => o.instanceId !== t.instanceId && o.shelfRow === t.shelfRow
+      );
       if (sameRow.length === 0) continue;
       let best = sameRow[0];
       for (const o of sameRow) {
         if (Math.abs(o.x - t.x) < Math.abs(best.x - t.x)) best = o;
       }
       const d = Math.abs(best.x - t.x);
-      neighborDir.set(t.uid, Math.sign(best.x - t.x) || 1);
+      neighborDir.set(t.instanceId, Math.sign(best.x - t.x) || 1);
       // 100px 以内にいれば「隣にいる」とみなす
-      closeness.set(t.uid, Math.max(0, 1 - d / 100));
+      closeness.set(t.instanceId, Math.max(0, 1 - d / 100));
     }
 
     let raf = 0;
@@ -95,22 +101,22 @@ export function useAmbientLife(
       const map = registry.current;
       if (map) {
         for (const target of list) {
-          const el = map.get(target.uid);
-          const life = lives.get(target.uid);
+          const el = map.get(target.instanceId);
+          const life = lives.get(target.instanceId);
           if (!el || !life) continue;
 
           // 呼吸: 個体ごとに位相をずらしたごく小さな上下。
           // 隣に誰かいると、呼吸の位相が少しずつ引き寄せられる。
           // 並んでいる2匹が同じリズムで息をしていると、
           // 「一緒にいる」ように見える。
-          const near = closeness.get(target.uid) ?? 0;
+          const near = closeness.get(target.instanceId) ?? 0;
           const phase = life.breathPhase * (1 - near * 0.55);
           const breath = Math.sin((t / life.breathPeriod) * Math.PI * 2 + phase);
           const sy = 1 + breath * 0.014;
           const sx = 1 - breath * 0.009;
 
           // 隣の方へごくわずかに傾く。寄りかかっているように見せる。
-          const dir = neighborDir.get(target.uid) ?? 0;
+          const dir = neighborDir.get(target.instanceId) ?? 0;
           const lean = dir * near * 2.2;
           el.setAttribute(
             "transform",
@@ -174,7 +180,7 @@ export function useAmbientLife(
       const map = registry.current;
       if (!map) return;
       for (const target of list) {
-        const el = map.get(target.uid);
+        const el = map.get(target.instanceId);
         if (!el) continue;
         el.setAttribute("transform", `translate(${target.x} 0)`);
         for (const eye of el.querySelectorAll<SVGEllipseElement>('[data-part="eye"]')) {

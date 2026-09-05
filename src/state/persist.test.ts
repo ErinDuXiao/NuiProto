@@ -1,14 +1,30 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { loadSave, writeSave, initialSave, STORAGE_KEY, SHELF_ROWS } from "./persist";
+import type { LogEventType } from "./types";
 
 beforeEach(() => localStorage.clear());
 afterEach(() => vi.restoreAllMocks());
 
+/** v1 時代の保存データ。移行の入力としてそのまま使う。 */
+const v1Fixture = {
+  version: 1,
+  sessionCount: 3,
+  owned: [
+    { uid: "a", defId: "bear_01", acquiredAt: 1000, x: 160, shelfRow: 1, seed: 0.3 },
+    { uid: "b", defId: "rabbit_01", acquiredAt: 2000, x: 242, shelfRow: 1, seed: 0.7 },
+  ],
+  craneBoard: null,
+  attempts: 5,
+  pendingWelcome: null,
+  firstMeetingDone: true,
+  log: [{ type: "shelf_view", t: 1, sessionId: "s" }],
+};
+
 describe("persist", () => {
   it("初期状態はBearを1匹持つ", () => {
     const s = initialSave();
-    expect(s.owned).toHaveLength(1);
-    expect(s.owned[0].defId).toBe("bear_01");
+    expect(s.instances).toHaveLength(1);
+    expect(s.instances[0].plushTypeId).toBe("bear_01");
     expect(s.firstMeetingDone).toBe(false);
     expect(s.pendingWelcome).toBeNull();
   });
@@ -16,12 +32,12 @@ describe("persist", () => {
   it("保存→読込で一致する", () => {
     const s = initialSave();
     s.attempts = 7;
-    s.owned[0].x = 123;
+    s.instances[0].x = 123;
     s.firstMeetingDone = true;
     writeSave(s);
     const back = loadSave();
     expect(back.attempts).toBe(7);
-    expect(back.owned[0].x).toBe(123);
+    expect(back.instances[0].x).toBe(123);
     expect(back.firstMeetingDone).toBe(true);
   });
 
@@ -34,42 +50,45 @@ describe("persist", () => {
 
   it("壊れたJSONなら初期状態に戻す", () => {
     localStorage.setItem(STORAGE_KEY, "{{{ not json");
-    expect(loadSave().owned[0].defId).toBe("bear_01");
+    expect(loadSave().instances[0].plushTypeId).toBe("bear_01");
   });
 
   it("versionが違えば初期状態に戻す", () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 99, owned: [] }));
-    expect(loadSave().owned).toHaveLength(1);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 99, instances: [] }));
+    expect(loadSave().instances).toHaveLength(1);
   });
 
-  it("ownedが配列でなければ初期状態に戻す", () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 1, owned: "nope" }));
-    expect(loadSave().owned).toHaveLength(1);
+  it("instancesが配列でなければ初期状態に戻す", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 2, instances: "nope" }));
+    expect(loadSave().instances).toHaveLength(1);
   });
 
-  it("未知のdefIdを持つ所持品は捨てる", () => {
+  it("未知のplushTypeIdを持つ所持品は捨てる", () => {
     const s = initialSave();
-    s.owned.push({
-      uid: "x",
-      defId: "dragon_99",
+    s.instances.push({
+      instanceId: "x",
+      plushTypeId: "dragon_99",
       acquiredAt: 0,
+      attemptsToAcquire: null,
+      witnessedBy: null,
+      origin: "crane",
       x: 0,
       shelfRow: 0,
-      seed: 0.5,
+      personalitySeed: 0.5,
     });
     writeSave(s);
     const back = loadSave();
-    expect(back.owned.every((o) => o.defId !== "dragon_99")).toBe(true);
-    expect(back.owned).toHaveLength(1);
+    expect(back.instances.every((o) => o.plushTypeId !== "dragon_99")).toBe(true);
+    expect(back.instances).toHaveLength(1);
   });
 
   it("所持品が全滅したら初期状態に戻す（空の部屋にしない）", () => {
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ version: 1, owned: [{ defId: "dragon_99" }], log: [] })
+      JSON.stringify({ version: 2, instances: [{ plushTypeId: "dragon_99" }], log: [] })
     );
-    expect(loadSave().owned).toHaveLength(1);
-    expect(loadSave().owned[0].defId).toBe("bear_01");
+    expect(loadSave().instances).toHaveLength(1);
+    expect(loadSave().instances[0].plushTypeId).toBe("bear_01");
   });
 
   it("未知のdefIdを持つ盤面は捨てる", () => {
@@ -88,7 +107,7 @@ describe("persist", () => {
   it("logが配列でなければ空にする", () => {
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ version: 1, owned: [], log: "oops" })
+      JSON.stringify({ version: 2, instances: [], log: "oops" })
     );
     expect(loadSave().log).toEqual([]);
   });
@@ -97,24 +116,51 @@ describe("persist", () => {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
-        version: 1,
+        version: 2,
         attempts: "many",
-        owned: [{ uid: "a", defId: "bear_01", acquiredAt: null, x: "left", shelfRow: 9, seed: 2 }],
+        instances: [
+          {
+            instanceId: "a",
+            plushTypeId: "bear_01",
+            acquiredAt: null,
+            x: "left",
+            shelfRow: 9,
+            personalitySeed: 2,
+            attemptsToAcquire: "three",
+            witnessedBy: 7,
+            origin: "crane",
+          },
+        ],
         log: [],
       })
     );
     const back = loadSave();
     expect(Number.isFinite(back.attempts)).toBe(true);
-    expect(Number.isFinite(back.owned[0].x)).toBe(true);
-    expect(back.owned[0].shelfRow).toBeLessThan(SHELF_ROWS);
+    expect(Number.isFinite(back.instances[0].x)).toBe(true);
+    expect(back.instances[0].shelfRow).toBeLessThan(SHELF_ROWS);
+    // 分からない来歴は捏造せず null にする
+    expect(back.instances[0].attemptsToAcquire).toBeNull();
+    expect(back.instances[0].witnessedBy).toBeNull();
   });
 
   it("未知のイベント種別を持つログは捨てる", () => {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
-        version: 1,
-        owned: [{ uid: "a", defId: "bear_01", acquiredAt: 1, x: 120, shelfRow: 1, seed: 0.5 }],
+        version: 2,
+        instances: [
+          {
+            instanceId: "a",
+            plushTypeId: "bear_01",
+            acquiredAt: 1,
+            x: 120,
+            shelfRow: 1,
+            personalitySeed: 0.5,
+            attemptsToAcquire: null,
+            witnessedBy: null,
+            origin: "crane",
+          },
+        ],
         log: [
           { type: "shelf_view", t: 1, sessionId: "s" },
           { type: "garbage", t: 2, sessionId: "s" },
@@ -136,28 +182,60 @@ describe("persist", () => {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
-        version: 1,
-        owned: [{ uid: "a", defId: "bear_01", acquiredAt: 1, x: 120, shelfRow: 1, seed: 0.5 }],
+        version: 2,
+        instances: [
+          {
+            instanceId: "a",
+            plushTypeId: "bear_01",
+            acquiredAt: 1,
+            x: 120,
+            shelfRow: 1,
+            personalitySeed: 0.5,
+            attemptsToAcquire: null,
+            witnessedBy: null,
+            origin: "crane",
+          },
+        ],
         log: many,
       })
     );
     expect(loadSave().log.length).toBeLessThanOrEqual(2000);
   });
 
-  it("uidが重複していたら振り直す", () => {
+  it("instanceIdが重複していたら振り直す", () => {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
-        version: 1,
-        owned: [
-          { uid: "same", defId: "bear_01", acquiredAt: 1, x: 120, shelfRow: 1, seed: 0.5 },
-          { uid: "same", defId: "fox_01", acquiredAt: 2, x: 200, shelfRow: 1, seed: 0.5 },
+        version: 2,
+        instances: [
+          {
+            instanceId: "same",
+            plushTypeId: "bear_01",
+            acquiredAt: 1,
+            x: 120,
+            shelfRow: 1,
+            personalitySeed: 0.5,
+            attemptsToAcquire: null,
+            witnessedBy: null,
+            origin: "starter",
+          },
+          {
+            instanceId: "same",
+            plushTypeId: "fox_01",
+            acquiredAt: 2,
+            x: 200,
+            shelfRow: 1,
+            personalitySeed: 0.5,
+            attemptsToAcquire: null,
+            witnessedBy: null,
+            origin: "crane",
+          },
         ],
         log: [],
       })
     );
-    const owned = loadSave().owned;
-    expect(new Set(owned.map((o) => o.uid)).size).toBe(2);
+    const instances = loadSave().instances;
+    expect(new Set(instances.map((o) => o.instanceId)).size).toBe(2);
   });
 
   it("writeSaveは成否を返す", () => {
@@ -179,6 +257,106 @@ describe("persist", () => {
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("SecurityError");
     });
-    expect(loadSave().owned).toHaveLength(1);
+    expect(loadSave().instances).toHaveLength(1);
+  });
+
+  it("LogEventType の全種別が保存で生き残る（許可リストとずれない）", () => {
+    const all: LogEventType[] = [
+      "session_start", "shelf_view", "arcade_enter", "crane_start", "crane_drop",
+      "plush_grabbed", "plush_dropped", "plush_moved", "plush_won", "shelf_return",
+      "plush_placed", "plush_repositioned", "share_clicked", "share_result",
+      "welcome_played", "plush_touched", "shelf_dwell",
+      "plush_profile_opened", "plush_drag_start", "plush_drag_end",
+      "neighbor_created", "neighbor_removed", "relationship_reaction",
+      "shelf_idle_10s", "shelf_idle_30s", "shelf_return_after_win",
+    ];
+    const s = initialSave();
+    s.log = all.map((type, i) => ({ type, t: i, sessionId: "s" }));
+    writeSave(s);
+    expect(loadSave().log.map((e) => e.type)).toEqual(all);
+  });
+});
+
+describe("persist / v1 からの移行", () => {
+  it("v1 の保存データを読み込んで移行する", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(v1Fixture));
+    const s = loadSave();
+    expect(s.version).toBe(2);
+    expect(s.instances).toHaveLength(2);
+    expect(s.instances[0].origin).toBe("starter");
+  });
+
+  it("移行結果を即座に v2 として保存し直す", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(v1Fixture));
+    loadSave();
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!).version).toBe(2);
+  });
+
+  it("保存キーは変えない（旧データを見失わない）", () => {
+    expect(STORAGE_KEY).toBe("plushcrane.v1");
+  });
+
+  it("version が 1 でも 2 でもなければ初期状態", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 99 }));
+    expect(loadSave().instances[0].origin).toBe("starter");
+  });
+
+  it("v1 の owned が配列でなければ初期状態", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 1, owned: "nope" }));
+    expect(loadSave().instances).toHaveLength(1);
+  });
+
+  it("v1 の未知の defId を持つ所持品は移行前に捨てる", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        ...v1Fixture,
+        owned: [
+          ...v1Fixture.owned,
+          { uid: "c", defId: "dragon_99", acquiredAt: 3, x: 0, shelfRow: 0, seed: 0.1 },
+        ],
+      })
+    );
+    expect(loadSave().instances).toHaveLength(2);
+  });
+
+  it("v2 の instances に不正な origin があれば unknown に落とす", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        instances: [{ instanceId: "a", plushTypeId: "bear_01", acquiredAt: 1, x: 160,
+                      shelfRow: 1, personalitySeed: 0.5, attemptsToAcquire: null,
+                      witnessedBy: null, origin: "nonsense" }],
+        log: [], neighborSince: {},
+      })
+    );
+    expect(loadSave().instances[0].origin).toBe("unknown");
+  });
+
+  it("neighborSince が壊れていても落ちない", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ version: 2, instances: [], neighborSince: "nope", log: [] })
+    );
+    expect(loadSave().neighborSince).toEqual({});
+  });
+
+  it("実在しない個体を指す neighborSince は捨てる", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        instances: [
+          { instanceId: "a", plushTypeId: "bear_01", acquiredAt: 1, x: 160, shelfRow: 1,
+            personalitySeed: 0.5, attemptsToAcquire: null, witnessedBy: null, origin: "starter" },
+          { instanceId: "b", plushTypeId: "fox_01", acquiredAt: 2, x: 242, shelfRow: 1,
+            personalitySeed: 0.5, attemptsToAcquire: null, witnessedBy: null, origin: "crane" },
+        ],
+        neighborSince: { "a|b": 1000, "a|ghost": 2000 },
+        log: [],
+      })
+    );
+    expect(loadSave().neighborSince).toEqual({ "a|b": 1000 });
   });
 });

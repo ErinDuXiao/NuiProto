@@ -1,4 +1,4 @@
-import type { LogEvent, SaveV1 } from "../state/types";
+import type { LogEvent, SaveV2 } from "../state/types";
 
 /**
  * プレイログを分析しやすい JSON にする（依頼書 24 章）。
@@ -6,15 +6,19 @@ import type { LogEvent, SaveV1 } from "../state/types";
  * 生イベントだけ渡しても後で読み解くのが大変なので、
  * 仕様 17.2 の「愛着の代理指標」をあらかじめ集計しておく。
  */
-export function buildLogJson(s: SaveV1): string {
+export function buildLogJson(s: SaveV2): string {
   return JSON.stringify(
     {
       version: 1,
       exportedAt: new Date().toISOString(),
       summary: summarize(s),
-      owned: s.owned.map((o) => ({
-        defId: o.defId,
+      instances: s.instances.map((o) => ({
+        plushTypeId: o.plushTypeId,
         acquiredAt: new Date(o.acquiredAt).toISOString(),
+        // 来歴は分析の主題そのものなので、集計だけでなく生の値も出す
+        origin: o.origin,
+        attemptsToAcquire: o.attemptsToAcquire,
+        witnessedBy: o.witnessedBy,
         shelfRow: o.shelfRow,
         x: Math.round(o.x),
       })),
@@ -37,7 +41,7 @@ function median(values: number[]): number | null {
   return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-function summarize(s: SaveV1) {
+function summarize(s: SaveV2) {
   const of = (t: LogEvent["type"]) => s.log.filter((e) => e.type === t);
 
   const dwells = of("shelf_dwell")
@@ -53,7 +57,7 @@ function summarize(s: SaveV1) {
   return {
     sessions: s.sessionCount,
     attempts: s.attempts,
-    ownedCount: s.owned.length,
+    ownedCount: s.instances.length,
     events: s.log.length,
 
     // --- 仕様 17.2 の弱い兆候 ---

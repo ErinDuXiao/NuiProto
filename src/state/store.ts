@@ -5,7 +5,7 @@ import {
   clearSave,
   initialSave,
   loadSave,
-  makeUid,
+  makeInstanceId,
   PER_ROW,
   SHELF_CAPACITY,
   SHELF_ROWS,
@@ -13,7 +13,7 @@ import {
   SLOT_X0,
   writeSave,
 } from "./persist";
-import type { CraneBoardSave, LogEventType, OwnedPlush, SaveV1 } from "./types";
+import type { CraneBoardSave, LogEventType, PlushInstance, SaveV2 } from "./types";
 
 type LogExtra = {
   plushId?: string;
@@ -23,7 +23,7 @@ type LogExtra = {
 
 const SESSION_ID = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
-let state: SaveV1 = loadSave();
+let state: SaveV2 = loadSave();
 const listeners = new Set<() => void>();
 
 /** 直近の永続化に成功したか。失敗し続けている場合は UI から知らせる。 */
@@ -41,7 +41,7 @@ let persistOk = true;
  *
  * 購読者の例外は握りつぶす。1人が落ちても他の購読者への通知を止めない。
  */
-function set(updater: (s: SaveV1) => SaveV1): void {
+function set(updater: (s: SaveV2) => SaveV2): void {
   const next = updater(state);
   if (next === state) return;
   state = next;
@@ -56,10 +56,10 @@ function set(updater: (s: SaveV1) => SaveV1): void {
 }
 
 function makeLog(
-  s: SaveV1,
+  s: SaveV2,
   type: LogEventType,
   extra: LogExtra = {}
-): SaveV1["log"] {
+): SaveV2["log"] {
   return pushLog(s.log, {
     type,
     t: Date.now(),
@@ -69,8 +69,8 @@ function makeLog(
 }
 
 /** 有効な段に置かれている個体だけを数える。 */
-function displayed(owned: OwnedPlush[]): OwnedPlush[] {
-  return owned.filter(
+function displayed(instances: PlushInstance[]): PlushInstance[] {
+  return instances.filter(
     (o) => Number.isInteger(o.shelfRow) && o.shelfRow >= 0 && o.shelfRow < SHELF_ROWS
   );
 }
@@ -86,8 +86,8 @@ function displayed(owned: OwnedPlush[]): OwnedPlush[] {
  * 格子のキーではなく実際の距離で占有を判定する。
  * 空きが無ければ shelfRow: -1（箱の中）を返す。個体を捨てることはしない。
  */
-function findSlot(owned: OwnedPlush[]): { x: number; shelfRow: number } {
-  const onShelf = displayed(owned);
+function findSlot(instances: PlushInstance[]): { x: number; shelfRow: number } {
+  const onShelf = displayed(instances);
   if (onShelf.length >= SHELF_CAPACITY) return { x: 160, shelfRow: -1 };
 
   let best: { x: number; shelfRow: number; cost: number } | null = null;
@@ -119,7 +119,7 @@ function findSlot(owned: OwnedPlush[]): { x: number; shelfRow: number } {
 }
 
 export const store = {
-  get(): SaveV1 {
+  get(): SaveV2 {
     return state;
   },
 
@@ -142,31 +142,43 @@ export const store = {
    * 途中の状態が外から見えないため、演出中にリロードしても
    * pendingWelcome が残り、演出は必ず 1 回だけ再生される（仕様 5.3）。
    *
-   * @returns 追加された個体の uid
+   * 来歴（何回目で取れたか・そのとき誰が見守っていたか）は**呼び出し側が渡す**。
+   * `attemptsOnBoard` は獲得すると 0 に戻る盤面カウンタなので、
+   * リセットが起きる前に読んだ値でなければ意味がない（仕様 4.3）。
+   * ストアが盤面の事情を知る必要はない。
+   *
+   * @returns 追加された個体の instanceId
    */
-  winPlush(defId: string): string {
-    // 未知の defId ならここで落ちる。状態を触る前に検証する。
-    getPlush(defId);
-    const uid = makeUid();
+  winPlush(input: {
+    plushTypeId: string;
+    attemptsToAcquire: number;
+    witnessedBy: string | null;
+  }): string {
+    // 未知の plushTypeId ならここで落ちる。状態を触る前に検証する。
+    getPlush(input.plushTypeId);
+    const instanceId = makeInstanceId();
     set((s) => {
-      const slot = findSlot(s.owned);
-      const plush: OwnedPlush = {
-        uid,
-        defId,
+      const slot = findSlot(s.instances);
+      const plush: PlushInstance = {
+        instanceId,
+        plushTypeId: input.plushTypeId,
         acquiredAt: Date.now(),
+        attemptsToAcquire: input.attemptsToAcquire,
+        witnessedBy: input.witnessedBy,
+        origin: "crane",
         x: slot.x,
         shelfRow: slot.shelfRow,
-        seed: Math.random(),
+        personalitySeed: Math.random(),
       };
-      const owned = [...s.owned, plush];
+      const instances = [...s.instances, plush];
       return {
         ...s,
-        owned,
-        pendingWelcome: uid,
-        log: makeLog(s, "plush_won", { plushId: defId, attempt: s.attempts }),
+        instances,
+        pendingWelcome: instanceId,
+        log: makeLog(s, "plush_won", { plushId: input.plushTypeId, attempt: s.attempts }),
       };
     });
-    return uid;
+    return instanceId;
   },
 
   /** 出会い演出の再生完了。pendingWelcome のクリアと初回完了の記録を同時に行う。 */
@@ -178,7 +190,7 @@ export const store = {
         pendingWelcome: null,
         firstMeetingDone: true,
         log: makeLog(s, "welcome_played", {
-          meta: { count: s.owned.length, skipped },
+          meta: { count: s.instances.length, skipped },
         }),
       };
     });
@@ -190,11 +202,11 @@ export const store = {
    * ストアが棚の不変条件を守る唯一の場所。呼び出し側が何を渡しても
    * 「段が範囲外」「定員13匹目」「x が NaN」といった状態にはならない。
    */
-  movePlush(uid: string, x: number, shelfRow: number): void {
+  movePlush(instanceId: string, x: number, shelfRow: number): void {
     set((s) => {
-      const idx = s.owned.findIndex((o) => o.uid === uid);
+      const idx = s.instances.findIndex((o) => o.instanceId === instanceId);
       if (idx < 0) return s;
-      const before = s.owned[idx];
+      const before = s.instances[idx];
 
       const row = Number.isFinite(shelfRow)
         ? Math.min(SHELF_ROWS - 1, Math.max(-1, Math.round(shelfRow)))
@@ -202,18 +214,18 @@ export const store = {
       const nx = Number.isFinite(x) ? Math.min(2000, Math.max(-2000, x)) : before.x;
 
       // 箱の中から棚へ出すときだけ定員を確認する
-      if (row >= 0 && before.shelfRow < 0 && displayed(s.owned).length >= SHELF_CAPACITY) {
+      if (row >= 0 && before.shelfRow < 0 && displayed(s.instances).length >= SHELF_CAPACITY) {
         return s;
       }
       if (row === before.shelfRow && nx === before.x) return s;
 
-      const owned = [...s.owned];
-      owned[idx] = { ...before, x: nx, shelfRow: row };
+      const instances = [...s.instances];
+      instances[idx] = { ...before, x: nx, shelfRow: row };
       return {
         ...s,
-        owned,
+        instances,
         log: makeLog(s, "plush_repositioned", {
-          plushId: before.defId,
+          plushId: before.plushTypeId,
           meta: { fromRow: before.shelfRow, toRow: row },
         }),
       };
@@ -232,22 +244,30 @@ export const store = {
     set((s) => ({ ...s, log: makeLog(s, type, extra) }));
   },
 
-  /** DevMenu 用。出会い演出を起こさずに追加する。 */
-  grantPlush(defId: string): void {
-    getPlush(defId);
+  /**
+   * DevMenu 用。出会い演出を起こさずに追加する。
+   *
+   * クレーンを経ていないので試行回数も見守り役も存在しない。
+   * それらしい数字を入れると、プロフィールがありもしない物語を語る。
+   */
+  grantPlush(plushTypeId: string): void {
+    getPlush(plushTypeId);
     set((s) => {
-      const slot = findSlot(s.owned);
+      const slot = findSlot(s.instances);
       return {
         ...s,
-        owned: [
-          ...s.owned,
+        instances: [
+          ...s.instances,
           {
-            uid: makeUid(),
-            defId,
+            instanceId: makeInstanceId(),
+            plushTypeId,
             acquiredAt: Date.now(),
+            attemptsToAcquire: null,
+            witnessedBy: null,
+            origin: "granted",
             x: slot.x,
             shelfRow: slot.shelfRow,
-            seed: Math.random(),
+            personalitySeed: Math.random(),
           },
         ],
       };
@@ -268,7 +288,7 @@ export const store = {
   },
 };
 
-export function useGame(): SaveV1 {
+export function useGame(): SaveV2 {
   return useSyncExternalStore(store.subscribe, store.get, store.get);
 }
 

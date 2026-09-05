@@ -143,13 +143,13 @@ export function ceremonyAt(
  * 演出中は棚側がこの2匹の描画を止め、演出側が描く。
  * 両方が描くと同じぬいぐるみが二重に見えるため、選定は必ず1箇所に置く。
  */
-export function pickHost<T extends { uid: string; x: number; shelfRow: number }>(
-  owned: T[],
-  guestUid: string
+export function pickHost<T extends { instanceId: string; x: number; shelfRow: number }>(
+  instances: T[],
+  guestId: string
 ): T | undefined {
-  const guest = owned.find((o) => o.uid === guestUid);
+  const guest = instances.find((o) => o.instanceId === guestId);
   if (!guest) return undefined;
-  const others = owned.filter((o) => o.uid !== guestUid && o.shelfRow >= 0);
+  const others = instances.filter((o) => o.instanceId !== guestId && o.shelfRow >= 0);
   if (others.length === 0) return undefined;
   const cost = (o: T) => Math.abs(o.x - guest.x) + Math.abs(o.shelfRow - guest.shelfRow) * 400;
   return others.reduce((best, o) => (cost(o) < cost(best) ? o : best));

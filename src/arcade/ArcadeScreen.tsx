@@ -65,10 +65,14 @@ export function ArcadeScreen({ onGoShelf, debugPhysics, showFps }: Props) {
 
   // 見守り役は最初に迎えた子
   const watcher = useMemo(() => {
-    const onShelf = game.owned.filter((o) => o.shelfRow >= 0);
-    const pool = onShelf.length > 0 ? onShelf : game.owned;
+    const onShelf = game.instances.filter((o) => o.shelfRow >= 0);
+    const pool = onShelf.length > 0 ? onShelf : game.instances;
     return [...pool].sort((a, b) => a.acquiredAt - b.acquiredAt)[0];
-  }, [game.owned]);
+  }, [game.instances]);
+
+  /** 見守り役をループのクロージャから読む。獲得時の来歴に記録する */
+  const watcherRef = useRef(watcher);
+  watcherRef.current = watcher;
 
   // 盤面の用意。保存があれば復元し、無ければ作る
   useEffect(() => {
@@ -214,9 +218,15 @@ export function ArcadeScreen({ onGoShelf, debugPhysics, showFps }: Props) {
         if (wonRef.current) break;
         wonRef.current = true;
         sfx.success();
-        const defId = e.bodyId?.split("#")[0];
-        if (defId) {
-          store.winPlush(defId);
+        const plushTypeId = e.bodyId?.split("#")[0];
+        if (plushTypeId) {
+          // attemptsOnBoard は盤面ごとのカウンタで、盤面が補充されると 0 に戻る。
+          // ここで読まないと「何回目で取れたか」が失われる（仕様 4.3）。
+          store.winPlush({
+            plushTypeId,
+            attemptsToAcquire: crane.attemptsOnBoard,
+            witnessedBy: watcherRef.current?.instanceId ?? null,
+          });
           store.saveBoard(null);
           // 少し余韻を置いてから棚へ帰る
           returnTimer.current = window.setTimeout(() => goShelfRef.current(), 1500);

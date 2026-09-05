@@ -1,17 +1,39 @@
 import { describe, it, expect } from "vitest";
 import { encodeShelf, decodeShelf, buildShelfSvg, SHARE_W, SHARE_H } from "./shelfToPng";
-import type { OwnedPlush } from "../state/types";
+import type { PlushInstance } from "../state/types";
 
-const owned: OwnedPlush[] = [
-  { uid: "u1", defId: "bear_01", acquiredAt: 1, x: 78, shelfRow: 1, seed: 0.3 },
-  { uid: "u2", defId: "rabbit_01", acquiredAt: 2, x: 160, shelfRow: 1, seed: 0.7 },
+/** テスト用の個体を組み立てる。来歴は共有画像に関係しないので既定値でよい。 */
+function inst(
+  instanceId: string,
+  plushTypeId: string,
+  acquiredAt: number,
+  x: number,
+  shelfRow: number,
+  personalitySeed: number
+): PlushInstance {
+  return {
+    instanceId,
+    plushTypeId,
+    acquiredAt,
+    attemptsToAcquire: null,
+    witnessedBy: null,
+    origin: "unknown",
+    x,
+    shelfRow,
+    personalitySeed,
+  };
+}
+
+const owned: PlushInstance[] = [
+  inst("u1", "bear_01", 1, 78, 1, 0.3),
+  inst("u2", "rabbit_01", 2, 160, 1, 0.7),
 ];
 
 describe("encodeShelf / decodeShelf", () => {
   it("往復して一致する", () => {
     const back = decodeShelf(encodeShelf(owned));
     expect(back).toHaveLength(2);
-    expect(back![0].defId).toBe("bear_01");
+    expect(back![0].plushTypeId).toBe("bear_01");
     expect(back![1].x).toBe(160);
     expect(back![1].shelfRow).toBe(1);
   });
@@ -30,10 +52,10 @@ describe("encodeShelf / decodeShelf", () => {
     expect(decodeShelf(encodeShelf([]))).toEqual([]);
   });
 
-  it("未知のdefIdを含む文字列は無視する", () => {
+  it("未知のplushTypeIdを含む文字列は無視する", () => {
     const s = encodeShelf([
       ...owned,
-      { uid: "u3", defId: "dragon_99", acquiredAt: 3, x: 0, shelfRow: 0, seed: 0.1 },
+      inst("u3", "dragon_99", 3, 0, 0, 0.1),
     ]);
     expect(decodeShelf(s)).toHaveLength(2);
   });
@@ -41,7 +63,7 @@ describe("encodeShelf / decodeShelf", () => {
   it("箱の中(shelfRow=-1)は含めない", () => {
     const s = encodeShelf([
       ...owned,
-      { uid: "u3", defId: "fox_01", acquiredAt: 3, x: 0, shelfRow: -1, seed: 0.1 },
+      inst("u3", "fox_01", 3, 0, -1, 0.1),
     ]);
     expect(decodeShelf(s)).toHaveLength(2);
   });
@@ -59,14 +81,9 @@ describe("encodeShelf / decodeShelf", () => {
   });
 
   it("多数所持でも壊れない", () => {
-    const many: OwnedPlush[] = Array.from({ length: 12 }, (_, i) => ({
-      uid: `u${i}`,
-      defId: "duck_01",
-      acquiredAt: i,
-      x: 78 + (i % 3) * 82,
-      shelfRow: Math.floor(i / 3),
-      seed: i / 12,
-    }));
+    const many: PlushInstance[] = Array.from({ length: 12 }, (_, i) =>
+      inst(`u${i}`, "duck_01", i, 78 + (i % 3) * 82, Math.floor(i / 3), i / 12)
+    );
     expect(decodeShelf(encodeShelf(many))).toHaveLength(12);
   });
 });
@@ -103,9 +120,9 @@ describe("buildShelfSvg 直列化制約 (仕様10章)", () => {
   });
 
   it("箱の中(shelfRow=-1)は描かない", () => {
-    const withBoxed: OwnedPlush[] = [
+    const withBoxed: PlushInstance[] = [
       ...owned,
-      { uid: "u3", defId: "fox_01", acquiredAt: 3, x: 0, shelfRow: -1, seed: 0.1 },
+      inst("u3", "fox_01", 3, 0, -1, 0.1),
     ];
     expect(buildShelfSvg(withBoxed).length).toBe(svg.length);
   });

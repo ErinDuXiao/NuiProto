@@ -73,7 +73,7 @@ export function DevMenu({ flags, onFlags, onClose }: Props) {
         <h2 className="dev-title">Developer Menu</h2>
 
         <p className="dev-stat">
-          おともだち {game.owned.length} / 通算プレイ {game.attempts} / ログ {game.log.length}
+          おともだち {game.instances.length} / 通算プレイ {game.attempts} / ログ {game.log.length}
           {!store.isPersisted() && <strong className="dev-warn"> 保存できていません</strong>}
         </p>
 
