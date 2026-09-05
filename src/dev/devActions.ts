@@ -14,7 +14,9 @@ export function buildLogJson(s: SaveV2): string {
       summary: summarize(s),
       instances: s.instances.map((o) => ({
         plushTypeId: o.plushTypeId,
-        acquiredAt: new Date(o.acquiredAt).toISOString(),
+        // 不明な日時を分析用のログでも埋めない。null のまま出さないと、
+        // 後で JSON を読む人が「その日に来た」と読んでしまう。
+        acquiredAt: o.acquiredAt === null ? null : new Date(o.acquiredAt).toISOString(),
         // 来歴は分析の主題そのものなので、集計だけでなく生の値も出す
         origin: o.origin,
         attemptsToAcquire: o.attemptsToAcquire,

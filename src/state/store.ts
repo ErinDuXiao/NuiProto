@@ -23,11 +23,20 @@ type LogExtra = {
 
 const SESSION_ID = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
-let state: SaveV2 = loadSave();
-const listeners = new Set<() => void>();
-
-/** 直近の永続化に成功したか。失敗し続けている場合は UI から知らせる。 */
+/**
+ * 直近の永続化に成功したか。失敗し続けている場合は UI から知らせる。
+ *
+ * 起動時の v1→v2 移行の書き戻しも「永続化」に含める。ここを無条件に
+ * true で始めると、移行が書けなかった環境（容量超過・プライベートモード）でも
+ * 画面は「保存できている」と言い続け、毎回の起動で黙って移行がやり直される。
+ * 最初に嘘をつかないよう、loadSave の結果でここを初期化する。
+ */
 let persistOk = true;
+
+let state: SaveV2 = loadSave((ok) => {
+  persistOk = ok;
+});
+const listeners = new Set<() => void>();
 
 /**
  * 状態を差し替えて永続化し、購読者に通知する。

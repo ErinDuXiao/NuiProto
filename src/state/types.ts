@@ -53,7 +53,22 @@ export type PlushInstance = {
   instanceId: string;
   /** どの種類か。`PlushDef.id` を指す */
   plushTypeId: string;
-  acquiredAt: number;
+
+  /**
+   * いつ家に来たか（epoch ms）。**null = 分からない。**
+   *
+   * 壊れた保存データを現在時刻で埋めない。埋めると
+   * プロフィールが「きょう、やってきた」と断定し、ゲームが
+   * 知らない事実をその場で作ってしまう
+   * （Global Constraint「分からない来歴を捏造しない」）。
+   *
+   * 並び替えのために 0 や Date.now() を入れて「不明フラグ」を
+   * 別に持つ形にはしない。数値が入っている限り、いつか必ず
+   * どこかで「日付として」読まれる。null なら読む側が必ず
+   * 「知らない場合どうするか」を決めさせられる。
+   * 並び替える側の扱いは ArcadeScreen / migrateV1 を参照。
+   */
+  acquiredAt: number | null;
 
   /** 何回目の試行で取れたか。null = 不明（v1 からの移行分、および starter） */
   attemptsToAcquire: number | null;
@@ -142,7 +157,8 @@ export type SaveV1Raw = {
   owned: {
     uid: string;
     defId: string;
-    acquiredAt: number;
+    /** v2 と同じく null = 分からない。移行先でもそのまま「不明」として運ぶ */
+    acquiredAt: number | null;
     x: number;
     shelfRow: number;
     seed: number;

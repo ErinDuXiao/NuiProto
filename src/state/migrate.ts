@@ -15,9 +15,17 @@ export function migrateV1(raw: SaveV1Raw): SaveV2 {
   // 最古の1匹だけを starter とみなす。v1 には来歴が記録されていないので、
   // 残りは「分からない」と書く。クレーンで取ったのか Developer Menu で
   // 足したのか区別できないものを "crane" にすると来歴の捏造になる。
+  //
+  // 日時が不明（null）の子はこの比較から外す。いつ来たか分からない子を
+  // 「最古」とは言えないし、starter は「はじめからここにいた」と断定する
+  // 来歴なので、根拠がないまま与えてはいけない。全員の日時が不明なら
+  // starter は決めず、全員 "unknown" のままにする。
   let oldest = -1;
   for (let i = 0; i < owned.length; i++) {
-    if (oldest < 0 || owned[i].acquiredAt < owned[oldest].acquiredAt) oldest = i;
+    const at = owned[i].acquiredAt;
+    if (at === null) continue;
+    const best = oldest < 0 ? null : owned[oldest].acquiredAt;
+    if (best === null || at < best) oldest = i;
   }
 
   const instances: PlushInstance[] = owned.map((o, i) => ({

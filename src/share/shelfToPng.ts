@@ -86,7 +86,9 @@ export function decodeShelf(s: string): PlushInstance[] | null {
     out.push({
       instanceId: `s${i}`,
       plushTypeId,
-      acquiredAt: 0,
+      // 共有リンクは日時を運ばない。0 は「1970年に来た」と読めてしまうので
+      // 「分からない」を意味する null にする。
+      acquiredAt: null,
       // 他人の棚を復元しただけなので、来歴は持ち込まない
       attemptsToAcquire: null,
       witnessedBy: null,

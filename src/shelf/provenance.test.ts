@@ -53,6 +53,22 @@ describe("provenanceLines", () => {
     expect(lines[0]).toBe("きょう、やってきた");
   });
 
+  it("いつ来たか分からない子には日付を捏造しない", () => {
+    // 保存データが壊れて acquiredAt が失われた場合。以前はここが
+    // 現在時刻で埋められ「きょう、やってきた」と断定していた。
+    const lines = provenanceLines({ ...base, acquiredAt: null }, [base, bear], NOW);
+    expect(lines.some((l) => l.includes("きょう"))).toBe(false);
+    expect(lines.some((l) => /\d+月\d+日/.test(l))).toBe(false);
+    expect(lines).toContain("いつからか、ここにいる");
+  });
+
+  it("日付が分からなくても、回数と見守り役は語る", () => {
+    // 分からない1つを隠すために、分かっている残りまで捨てない。
+    const lines = provenanceLines({ ...base, acquiredAt: null }, [base, bear], NOW);
+    expect(lines).toContain("3回目でおうちに来た");
+    expect(lines).toContain("ブラウンベアが一緒に見ていた");
+  });
+
   it("数値・レアリティ・能力値を出さない", () => {
     const all = provenanceLines(base, [base, bear], NOW).join(" ");
     expect(/rare|common|special|レア|Lv|ポイント|好感度/i.test(all)).toBe(false);
@@ -61,6 +77,9 @@ describe("provenanceLines", () => {
   it("どの入力でも空配列にならない", () => {
     for (const o of ["starter", "crane", "granted", "unknown"] as const) {
       expect(provenanceLines({ ...base, origin: o }, [base], NOW).length).toBeGreaterThan(0);
+      // 何も分からない状態でも「言うことが無い」空欄にはしない
+      const blank = { ...base, origin: o, acquiredAt: null, attemptsToAcquire: null, witnessedBy: null };
+      expect(provenanceLines(blank, [base], NOW).length).toBeGreaterThan(0);
     }
   });
 });

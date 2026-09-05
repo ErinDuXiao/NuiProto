@@ -4,7 +4,7 @@ import type { PlushInstance } from "../state/types";
 /**
  * 来歴を文章にする。
  *
- * `attemptsToAcquire` と `witnessedBy` は null が「分からない」を意味する。
+ * `acquiredAt` / `attemptsToAcquire` / `witnessedBy` は null が「分からない」を意味する。
  * 分からないものは行を出さないだけで、0回やナシとして書いてはいけない
  * （Global Constraint「分からない来歴を捏造しない」）。
  *
@@ -25,7 +25,22 @@ export function provenanceLines(
   // ここから "crane"。分かる行だけを、日付・回数・見守り役の順に積む。
   const lines: string[] = [];
 
-  lines.push(sameDay(inst.acquiredAt, now) ? "きょう、やってきた" : `${dateLabel(inst.acquiredAt)}にやってきた`);
+  // 日時が不明（保存データが壊れていた等）なら、日付を言わずに
+  // 来歴不明と同じぼかした言い方に落とす。以前はここで現在時刻が
+  // 埋められていたため「きょう、やってきた」と断定していた。
+  //
+  // ただし行ごと消したり "crane" を捨てたりはしない。日付が分からない
+  // ことと、クレーンで取ったこと・何回かかったこと・誰が見ていたかを
+  // 知っていることは別。分からない1つを隠すために、
+  // 分かっている残りまで捨ててはいけない。
+  const at = inst.acquiredAt;
+  lines.push(
+    at === null
+      ? "いつからか、ここにいる"
+      : sameDay(at, now)
+        ? "きょう、やってきた"
+        : `${dateLabel(at)}にやってきた`
+  );
 
   if (inst.attemptsToAcquire !== null) {
     lines.push(inst.attemptsToAcquire <= 1 ? "すぐにおうちに来た" : `${inst.attemptsToAcquire}回目でおうちに来た`);

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { store } from "./store";
 import { STORAGE_KEY, PER_ROW, SHELF_CAPACITY, SHELF_ROWS, SLOT_SPACING } from "./persist";
 
@@ -227,5 +227,60 @@ describe("store / 来歴", () => {
     expect(raw.instances[1].attemptsToAcquire).toBe(7);
     expect(raw.instances[1].witnessedBy).toBe("bear-1");
     expect(raw.instances[1].origin).toBe("crane");
+  });
+});
+
+/**
+ * 起動時の v1→v2 移行の書き戻しが失敗したときに、
+ * ストアが「保存できている」と嘘をつかないことを確かめる。
+ *
+ * ここが true 固定に戻ると、書けない環境で警告が出ないまま
+ * 毎回の起動で移行がやり直され、プレイヤーは棚が保存されて
+ * いないことに気づけない（DevMenu / ShelfScreen の
+ * 「保存できていません」表示がこの値だけを見ている）。
+ */
+describe("store / 起動時の移行と保存の成否", () => {
+  /** v1 時代の保存データ。移行を必ず走らせるための入力。 */
+  const v1Fixture = {
+    version: 1,
+    sessionCount: 1,
+    owned: [
+      { uid: "a", defId: "bear_01", acquiredAt: 1000, x: 160, shelfRow: 1, seed: 0.3 },
+    ],
+    craneBoard: null,
+    attempts: 0,
+    pendingWelcome: null,
+    firstMeetingDone: true,
+    log: [],
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  /** localStorage を用意し直してからストアを読み込み直す。 */
+  async function freshStore(): Promise<typeof store> {
+    vi.resetModules();
+    const mod = await import("./store");
+    return mod.store;
+  }
+
+  it("移行の書き戻しに失敗したら isPersisted は false", async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(v1Fixture));
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    const fresh = await freshStore();
+    // 移行自体は成功して棚は見える。保存だけができていない。
+    expect(fresh.get().instances).toHaveLength(1);
+    expect(fresh.isPersisted()).toBe(false);
+  });
+
+  it("移行の書き戻しに成功すれば isPersisted は true", async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(v1Fixture));
+    const fresh = await freshStore();
+    expect(fresh.get().version).toBe(2);
+    expect(fresh.isPersisted()).toBe(true);
   });
 });

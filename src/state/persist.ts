@@ -97,10 +97,33 @@ function clampRow(raw: unknown): number {
   return row < 0 ? -1 : Math.min(row, SHELF_ROWS - 1);
 }
 
-/** 試行回数。分からない場合は捏造せず null のまま残す。 */
+/**
+ * 試行回数。分からない場合は捏造せず null のまま残す。
+ *
+ * **壊れた値を 0 に丸めない。** 0 回や負の回数で景品は取れないので、
+ * それは「0 回で取れた」という事実ではなく「値が壊れている」だけ。
+ * ところが provenance は 1 以下を「すぐにおうちに来た」と読むため、
+ * 0 に丸めた瞬間、壊れたデータが断定文に化ける。
+ * 有効な回数（1 以上）でなければ null＝分からない、に落とす
+ * （Global Constraint「分からない来歴を捏造しない」）。
+ */
 function sanitizeAttempts(raw: unknown): number | null {
   if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
-  return Math.max(0, Math.min(9999, Math.round(raw)));
+  const n = Math.round(raw);
+  if (n < 1) return null;
+  return Math.min(9999, n);
+}
+
+/**
+ * 家に来た日時。読めなければ現在時刻で埋めず null にする。
+ *
+ * `num(raw, Date.now())` で埋めていた頃は、壊れた保存データが
+ * そのままプロフィールの「きょう、やってきた」になっていた。
+ * ゲームが知らない日付を、読み込みのたびに新しく作っていたことになる。
+ * 分からないものは分からないまま運ぶ（`PlushInstance.acquiredAt` の注記）。
+ */
+function sanitizeAcquiredAt(raw: unknown): number | null {
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
 }
 
 /**
@@ -127,7 +150,7 @@ function sanitizeInstances(raw: unknown): PlushInstance[] {
     out.push({
       instanceId: id,
       plushTypeId: o.plushTypeId,
-      acquiredAt: num(o.acquiredAt, Date.now()),
+      acquiredAt: sanitizeAcquiredAt(o.acquiredAt),
       attemptsToAcquire: sanitizeAttempts(o.attemptsToAcquire),
       witnessedBy: typeof o.witnessedBy === "string" ? o.witnessedBy.slice(0, 64) : null,
       origin: ORIGINS.has(o.origin as PlushOrigin) ? (o.origin as PlushOrigin) : "unknown",
@@ -154,7 +177,9 @@ function sanitizeOwnedV1(raw: unknown): SaveV1Raw["owned"] {
     out.push({
       uid,
       defId: o.defId,
-      acquiredAt: num(o.acquiredAt, Date.now()),
+      // v1 でも同じ。壊れた日時を現在時刻に置き換えると、移行の瞬間に
+      // 「きょう来た」という嘘が保存データへ焼き付く。
+      acquiredAt: sanitizeAcquiredAt(o.acquiredAt),
       x: Math.min(2000, Math.max(-2000, num(o.x, 160))),
       shelfRow: clampRow(o.shelfRow),
       seed: Math.min(1, Math.max(0, num(o.seed, Math.random()))),
@@ -346,8 +371,15 @@ export function parseV1(raw: unknown): SaveV1Raw | null {
  * 順序は仕様 4.2.1 のとおり。v1 を読んだら移行して**即座に書き戻す**。
  * 書き戻さないと、次回の起動でも毎回移行が走り、移行後に足した情報
  * （来歴・隣接の記録）が保存のたびに古い形と競合する。
+ *
+ * @param onMigrationWrite 移行の書き戻しが成功したかを受け取る。
+ *   この結果を捨てると、書けなかった（容量超過・プライベートモード）ときでも
+ *   アプリは「保存できている」と表示し、毎回黙って移行をやり直す。
+ *   呼び出し側が `store.isPersisted()` へ届けるための唯一の経路。
+ *   モジュール内に成否を隠し持たないのは、読み込みの結果を
+ *   受け取り忘れたことがコード上で見えるようにするため。
  */
-export function loadSave(): SaveV2 {
+export function loadSave(onMigrationWrite?: (ok: boolean) => void): SaveV2 {
   let raw: string | null = null;
   try {
     raw = localStorage.getItem(STORAGE_KEY);
@@ -372,7 +404,10 @@ export function loadSave(): SaveV2 {
     const v1 = parseV1(parsed);
     if (!v1) return initialSave();
     const v2 = migrateV1(v1);
-    writeSave(v2);
+    // 書き戻しは必ず行う。`onMigrationWrite?.(writeSave(v2))` と書くと
+    // コールバック未指定のとき引数ごと評価されず、移行が保存されない。
+    const written = writeSave(v2);
+    onMigrationWrite?.(written);
     return v2;
   }
 

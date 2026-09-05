@@ -64,11 +64,17 @@ export function ArcadeScreen({ onGoShelf, debugPhysics, showFps }: Props) {
   const [frame, setFrame] = useState<Frame | null>(null);
   const [fps, setFps] = useState(0);
 
-  // 見守り役は最初に迎えた子
+  // 見守り役は最初に迎えた子。
+  //
+  // acquiredAt が null（いつ来たか分からない）の子は最後に回す。
+  // 「分からない」を 0 として扱うと、日時の壊れた子が最古扱いになり、
+  // 「最初に迎えた子」という肩書きを根拠なく背負ってしまう。
+  // 全員が不明なら並び順は変わらず、先頭の子がそのまま見守り役になる。
   const watcher = useMemo(() => {
     const onShelf = game.instances.filter((o) => o.shelfRow >= 0);
     const pool = onShelf.length > 0 ? onShelf : game.instances;
-    return [...pool].sort((a, b) => a.acquiredAt - b.acquiredAt)[0];
+    const key = (o: (typeof pool)[number]) => o.acquiredAt ?? Number.MAX_SAFE_INTEGER;
+    return [...pool].sort((a, b) => key(a) - key(b))[0];
   }, [game.instances]);
 
   /** 見守り役をループのクロージャから読む。獲得時の来歴に記録する */

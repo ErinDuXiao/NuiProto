@@ -65,6 +65,29 @@ describe("migrateV1", () => {
     expect(out.pendingWelcome).toBe("b");
   });
 
+  it("日時が不明な子を「最古」にしない", () => {
+    // acquiredAt: null は「いつ来たか分からない」。0 として比較すると
+    // 一番古い子に化け、根拠なく starter（はじめからここにいた）になる。
+    const out = migrateV1({
+      ...v1,
+      owned: [
+        { uid: "a", defId: "bear_01", acquiredAt: null, x: 160, shelfRow: 1, seed: 0.3 },
+        { uid: "b", defId: "rabbit_01", acquiredAt: 2000, x: 242, shelfRow: 1, seed: 0.7 },
+      ],
+    });
+    expect(out.instances[0].origin).toBe("unknown");
+    expect(out.instances[0].acquiredAt).toBeNull();
+    expect(out.instances[1].origin).toBe("starter");
+  });
+
+  it("全員の日時が不明なら starter を決めない", () => {
+    const out = migrateV1({
+      ...v1,
+      owned: v1.owned.map((o) => ({ ...o, acquiredAt: null })),
+    });
+    expect(out.instances.every((i) => i.origin === "unknown")).toBe(true);
+  });
+
   it("所持品が空でも落ちない", () => {
     expect(() => migrateV1({ ...v1, owned: [] })).not.toThrow();
   });

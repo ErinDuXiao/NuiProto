@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { loadSave, writeSave, initialSave, STORAGE_KEY, SHELF_ROWS } from "./persist";
+import { provenanceLines } from "../shelf/provenance";
 import type { LogEventType } from "./types";
 
 beforeEach(() => localStorage.clear());
@@ -362,6 +363,26 @@ describe("persist / v1 からの移行", () => {
     expect(loadSave().neighborSince).toEqual({});
   });
 
+  it("acquiredAt が壊れていても他の個体は読める", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        instances: [
+          { instanceId: "a", plushTypeId: "bear_01", acquiredAt: 1, x: 160, shelfRow: 1,
+            personalitySeed: 0.5, attemptsToAcquire: null, witnessedBy: null, origin: "starter" },
+          { instanceId: "b", plushTypeId: "fox_01", acquiredAt: "むかし", x: 242, shelfRow: 1,
+            personalitySeed: 0.5, attemptsToAcquire: null, witnessedBy: null, origin: "crane" },
+        ],
+        log: [],
+      })
+    );
+    const instances = loadSave().instances;
+    expect(instances).toHaveLength(2);
+    expect(instances[0].acquiredAt).toBe(1);
+    expect(instances[1].acquiredAt).toBeNull();
+  });
+
   it("実在しない個体を指す neighborSince は捨てる", () => {
     localStorage.setItem(
       STORAGE_KEY,
@@ -378,5 +399,106 @@ describe("persist / v1 からの移行", () => {
       })
     );
     expect(loadSave().neighborSince).toEqual({ "a|b": 1000 });
+  });
+});
+
+/**
+ * 壊れた保存データが「断定文」に化けないことを、保存の往復と
+ * プロフィール文面の両方で確かめる。
+ *
+ * ここが崩れると、ゲームは知らないはずの来歴を自信たっぷりに語り出す。
+ * 「値を丸めたほうが分岐が減る」という理由でサニタイズを
+ * 元に戻さないこと（Global Constraint「分からない来歴を捏造しない」）。
+ */
+describe("persist / 壊れた来歴を捏造しない", () => {
+  /** 2026年9月10日。日付の断定が出たかどうかを見るための基準時刻。 */
+  const NOW = new Date("2026-09-10T10:00:00").getTime();
+
+  /** crane 由来の個体を1匹だけ持つ保存データを書いて読み直す。 */
+  function roundTrip(overrides: Record<string, unknown>) {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        instances: [
+          {
+            instanceId: "a",
+            plushTypeId: "rabbit_01",
+            acquiredAt: new Date("2026-09-04T10:00:00").getTime(),
+            attemptsToAcquire: 3,
+            witnessedBy: null,
+            origin: "crane",
+            x: 160,
+            shelfRow: 1,
+            personalitySeed: 0.5,
+            ...overrides,
+          },
+        ],
+        log: [],
+        neighborSince: {},
+      })
+    );
+    const inst = loadSave().instances[0];
+    return { inst, lines: provenanceLines(inst, [inst], NOW) };
+  }
+
+  // 0回や負の回数で景品は取れない。これは「0回で取れた」ではなく壊れた値。
+  it.each([[0], [-1], [-9999], [0.4]])(
+    "試行回数 %s は 0 に丸めず null にし、回数の行を出さない",
+    (attempts) => {
+      const { inst, lines } = roundTrip({ attemptsToAcquire: attempts });
+      expect(inst.attemptsToAcquire).toBeNull();
+      expect(lines.some((l) => l.includes("回目"))).toBe(false);
+      expect(lines.some((l) => l.includes("すぐにおうちに来た"))).toBe(false);
+    }
+  );
+
+  it("正しい試行回数はそのまま残る（サニタイズが行き過ぎていない）", () => {
+    const { inst, lines } = roundTrip({ attemptsToAcquire: 1 });
+    expect(inst.attemptsToAcquire).toBe(1);
+    expect(lines).toContain("すぐにおうちに来た");
+    expect(roundTrip({ attemptsToAcquire: 12 }).lines).toContain("12回目でおうちに来た");
+  });
+
+  // 現在時刻で埋めると、読み込むたびに「きょう来た」という嘘が生まれる。
+  it.each([[null], ["きのう"], [Number.NaN], [Number.POSITIVE_INFINITY]])(
+    "acquiredAt が %s なら現在時刻で埋めず null にし、日付を断定しない",
+    (acquiredAt) => {
+      const { inst, lines } = roundTrip({ acquiredAt });
+      expect(inst.acquiredAt).toBeNull();
+      expect(lines).toContain("いつからか、ここにいる");
+      expect(lines.some((l) => l.includes("きょう"))).toBe(false);
+      expect(lines.some((l) => /\d+月\d+日/.test(l))).toBe(false);
+    }
+  );
+
+  it("日付が分からなくても、分かっている回数は語る（知っている事実を捨てない）", () => {
+    const { lines } = roundTrip({ acquiredAt: null, attemptsToAcquire: 5 });
+    expect(lines).toContain("いつからか、ここにいる");
+    expect(lines).toContain("5回目でおうちに来た");
+  });
+
+  it("正しい acquiredAt はそのまま残る（サニタイズが行き過ぎていない）", () => {
+    const { inst, lines } = roundTrip({});
+    expect(inst.acquiredAt).toBe(new Date("2026-09-04T10:00:00").getTime());
+    expect(lines).toContain("9月4日にやってきた");
+  });
+
+  it("v1 の壊れた acquiredAt も現在時刻で埋めない", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        ...v1Fixture,
+        owned: [
+          { uid: "a", defId: "bear_01", acquiredAt: 1000, x: 160, shelfRow: 1, seed: 0.3 },
+          { uid: "b", defId: "rabbit_01", acquiredAt: "?", x: 242, shelfRow: 1, seed: 0.7 },
+        ],
+      })
+    );
+    const instances = loadSave().instances;
+    expect(instances[1].acquiredAt).toBeNull();
+    // 日時が分からない子を「最古＝はじめからここにいた」にはしない
+    expect(instances[0].origin).toBe("starter");
+    expect(instances[1].origin).toBe("unknown");
   });
 });
