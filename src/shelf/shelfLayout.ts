@@ -20,12 +20,36 @@ export const SHELF = {
 export { PER_ROW };
 
 /**
- * ドラッグ中、ぬいぐるみを指の何 px 上に描くか（仕様6.1）。
+ * 隣接リンクが「張られる」距離 / 「切れる」距離（仕様5.1）。
+ *
+ * **ここに置いてあるのは、棚の配置計算（`snapPlacement`）と関係の計算
+ * （`neighbors.ts`）の両方が同じ数値を見なければならないため。**
+ * `neighbors.ts` は `SHELF` を使うので、配置側が `neighbors.ts` から
+ * 借りると循環参照になる。かといって両方に 110 と書くと、片方だけ
+ * 直したときに「隣に置いたつもりが隣にならない」という、誰にも
+ * 見えない形で壊れる（このリポジトリは過去に棚の定数を二重に持って
+ * 事故を起こしている）。定義はこの1箇所だけ。
+ *
+ * 張る閾値より切る閾値を緩くしてヒステリシスを作る（点滅させない）。
+ */
+export const NEIGHBOR_LINK_DISTANCE = 110;
+export const NEIGHBOR_BREAK_DISTANCE = 124;
+
+/**
+ * ドラッグ中、段を選ぶ基準を指の何 px 上に取るか（仕様6.1）。
  *
  * 最大の景品の直径は 72px（size 34 × 個体差 1.05 の半径 35.7）。その半径より
- * 大きく取ることで、足元を掴んでいる指が顔まで届かない。段の間隔 102px の
- * 半分（51px）より小さくもしておく — ここを超えると、指をまったく動かして
- * いないのに持ち上げただけで一段上へ吸着してしまう。
+ * 大きく取る。段の間隔 102px の半分（51px）より小さくもしておく — ここを
+ * 超えると、指をまったく動かしていないのに持ち上げただけで一段上へ
+ * 吸着してしまう。
+ *
+ * **「指が顔まで届かない」を無条件に保証する値ではない。** 描く足元は
+ * 常にどこかの段の上面ラインなので、指と足元の差は段の吸着ぶんずれる。
+ * 段の内側（指が `rowY[0]` 以下）では足元が指より最大 5px しか下に来ない
+ * （51 − 46）。しかし**最上段より上では `rowFromY` がクランプする**ため、
+ * 指が `rowY[0]` を超えて上がった分だけ差は無制限に開く（指 y=150 で
+ * 64px）。ここは持ち上げ量では閉じられない — 上に乗せる棚板が無いので、
+ * どんな値にしても指だけが先に上がる。詳細は `useDragPlacement.poseOf`。
  */
 export const DRAG_LIFT_PX = 46;
 
@@ -219,10 +243,77 @@ export function snapPlacement(
     const inRow = rest.filter((o) => o.shelfRow === candidateRow);
     if (inRow.length >= PER_ROW) continue;
     const placed = pushOut(wantX, r, inRow);
-    if (placed !== null) return { x: placed, shelfRow: candidateRow, reverted: false };
+    if (placed !== null) {
+      return {
+        x: preferNeighborly(placed, r, candidateRow, inRow, rest),
+        shelfRow: candidateRow,
+        reverted: false,
+      };
+    }
   }
 
   return { x: wantX, shelfRow: wantRow, reverted: true };
+}
+
+/**
+ * 隣接の判定に使うのと同じ距離（`neighbors.ts` の候補生成と揃える）。
+ * 同じ段なら x 差、上下の隣の段なら斜辺。2段以上離れた相手とは隣になれない。
+ */
+function neighborDistance(x: number, row: number, o: Placed): number {
+  const dRow = Math.abs(o.shelfRow - row);
+  if (dRow === 0) return Math.abs(o.x - x);
+  if (dRow === 1) return Math.hypot(o.x - x, rowY(o.shelfRow) - rowY(row));
+  return Number.POSITIVE_INFINITY;
+}
+
+/**
+ * 「隣になれる位置」を優先して吸着させる（仕様6.4）。
+ *
+ * 並べ替えは、プレイヤーが**誰の隣に誰を置くかを決める**操作である。
+ * 落とした位置が隣接距離 (110px) の外側に数 px 落ちただけでリンクが
+ * 張られないと、プレイヤーの意図は何の手応えもなく空振りする。
+ * そこで、置ける位置の中から「誰かの隣になれる位置」を選ぶ。
+ *
+ * **引き寄せは半径 `r` までしか許さない。** これは「プレイヤーが指した点を、
+ * ぬいぐるみが依然として覆っている」範囲そのもの。これを超えると、
+ * 狙った場所とは別の場所へ勝手に動いたようにしか見えない。
+ * 押し出し (`pushOut`) 自体が動かす距離は最小でも `(o.r + r) * 0.94`
+ * ＝ ほぼ `2r` なので、この引き寄せは押し出しが動かす量より必ず小さい。
+ * 明らかに誰からも離れた場所を狙った Drop は、そのままそこに残る。
+ */
+function preferNeighborly(
+  base: number,
+  r: number,
+  row: number,
+  inRow: Placed[],
+  all: Placed[]
+): number {
+  // すでに誰かの隣になれるなら 1px も動かさない。狙いがそのまま通る。
+  if (all.some((o) => neighborDistance(base, row, o) < NEIGHBOR_LINK_DISTANCE)) return base;
+
+  const [lo, hi] = bounds(r);
+  const free = (v: number) =>
+    v >= lo && v <= hi && inRow.every((o) => Math.abs(o.x - v) >= (o.r + r) * 0.94);
+
+  // いちばん近い相手の側から先に試す。左右で同点のとき、遠い方へ
+  // 寄せると「隣に置いたのに逆へ逃げた」ように見える。
+  let dir = 1;
+  let nearest = Number.POSITIVE_INFINITY;
+  for (const o of all) {
+    const d = neighborDistance(base, row, o);
+    if (d < nearest) {
+      nearest = d;
+      dir = o.x >= base ? 1 : -1;
+    }
+  }
+
+  for (let d = 4; d <= r; d += 4) {
+    for (const v of [base + dir * d, base - dir * d]) {
+      if (!free(v)) continue;
+      if (all.some((o) => neighborDistance(v, row, o) < NEIGHBOR_LINK_DISTANCE)) return v;
+    }
+  }
+  return base;
 }
 
 /** 既存の個体と重ならない最寄りの x を探す。見つからなければ null。 */

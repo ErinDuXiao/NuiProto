@@ -284,6 +284,50 @@ describe("useDragPlacement — 指で隠れない × 棚板から浮かない（
     }
   });
 
+  it("持ち上げの 120ms の途中でも、足元は棚板の上面ラインから離れない", () => {
+    // 仕様6.1 の「常に」はランプ中も含む。ここに描画のランプを掛けると、
+    // 最初の 120ms だけ足元が段と段の間に浮き、同じフレームで影
+    // （必ず段の上面ラインに出る）と胴体の高さが食い違う。
+    render(<Harness />);
+    const s = starter();
+    const feet = rowY(s.row);
+    // 頭のあたりを掴む = ランプの途中で必ず段が切り替わる持ち方
+    down(grab(s.id), s.x, feet - 60);
+    move(s.x + 6, feet - 60);
+
+    // 認識された直後（ランプ e=0）
+    expect(lastDrag!.moved, "ドラッグが始まっていない").toBe(true);
+    expect(lastDrag!.y, "掴んだ直後に棚板から浮いている").toBe(rowY(lastDrag!.shelfRow));
+
+    // ランプの端から端まで 8ms 刻みで。60ms 付近（e≒0.75）は段が
+    // 切り替わる瞬間をまたぐ。
+    const rows = new Set<number>([lastDrag!.shelfRow]);
+    for (let t = 0; t <= 200; t += 8) {
+      tick(8);
+      expect(lastDrag!.y, `ランプ +${t}ms で棚板から浮いている`).toBe(rowY(lastDrag!.shelfRow));
+      rows.add(lastDrag!.shelfRow);
+    }
+    expect(rows.size, "段が一度も切り替わらず、切り替わりを見ていない").toBeGreaterThan(1);
+  });
+
+  it("段をまたいでも、影を出す段と胴体の段が同じフレームで食い違わない", () => {
+    // 影は `rowY(landingRow)` に出る。胴体が段の間にいる瞬間があると、
+    // 「置ける場所」を指しているはずの影が、胴体とは別の高さで浮く。
+    render(<Harness />);
+    const s = starter();
+    down(grab(s.id), s.x, rowY(s.row));
+    move(s.x + 10, rowY(s.row));
+
+    for (let y = 560; y >= 200; y -= 6) {
+      move(s.x + 10, y);
+      tick(8);
+      if (lastDrag!.settling) continue; // 滑走中は影を出さない
+      if (lastDrag!.landingRow === null) continue;
+      expect(lastDrag!.landingRow, `y=${y} で影と胴体の段が違う`).toBe(lastDrag!.shelfRow);
+      expect(lastDrag!.y, `y=${y} で影と胴体の高さが違う`).toBe(rowY(lastDrag!.landingRow));
+    }
+  });
+
   it("持ち上がったあと、足元は指より上にある（顔が指で隠れない）", () => {
     render(<Harness />);
     const s = starter();
@@ -291,18 +335,38 @@ describe("useDragPlacement — 指で隠れない × 棚板から浮かない（
     move(s.x + 10, rowY(s.row));
     tick(200);
 
-    // 段の吸着で最大 (段間隔/2 = 51px) だけ下へずれるが、持ち上げ量 46px を
-    // 引いた **5px** しか指に近づかない。指が入るのは胴（72px）の最下部
-    // 5px であって、顔には決して届かない。この 5px は仕様の数値
-    // （46 < 51）が抱えている残差なので、境界値としてここに固定しておく。
+    /**
+     * **この上界は棚の内側でしか成り立たない。** 掃引はその境目をまたぐ。
+     *
+     * 指が最上段の上面ライン (`rowY[0]`) 以下にいる間は、段の吸着で最大
+     * (段間隔/2 = 51px) 下へずれるが、持ち上げ量 46px を引いた **5px** しか
+     * 指に近づかない（胴 72px の最下部であって顔には届かない）。
+     *
+     * ところが `rowFromY` は最上段にクランプするので、指が `rowY[0]` より
+     * 上へ行くと足元は 214 に留まり、差は指が上がった分だけ**無制限に**開く。
+     * これは持ち上げ量では閉じられない（上に乗せる棚板が無い）。
+     * したがってその帯では 5px ではなく「クランプで説明できる分ちょうど」を
+     * 固定する — 上界が成り立つ範囲だけを掃引して、成り立たない帯を
+     * 見ないようにするのは、テストで嘘を守ることになる。
+     */
     const slack = (SHELF.rowY[1] - SHELF.rowY[0]) / 2 - DRAG_LIFT_PX;
-    for (let y = 260; y <= 520; y += 7) {
+    let clampedBandSeen = 0;
+    for (let y = 100; y <= 560; y += 7) {
       move(s.x + 10, y);
       tick();
-      expect(lastDrag!.y - y, `y=${y} で指がぬいぐるみに深く重なっている`).toBeLessThanOrEqual(
-        slack + 0.001
-      );
+      if (y >= SHELF.rowY[0]) {
+        expect(lastDrag!.y - y, `y=${y} で指がぬいぐるみに深く重なっている`).toBeLessThanOrEqual(
+          slack + 0.001
+        );
+      } else {
+        // 最上段より上。ずれの原因はクランプだけであることを確かめる。
+        clampedBandSeen++;
+        expect(lastDrag!.shelfRow, `y=${y} で最上段以外へ行っている`).toBe(0);
+        expect(lastDrag!.y, `y=${y} で最上段の上面ラインを離れている`).toBe(SHELF.rowY[0]);
+        expect(lastDrag!.y - y, `y=${y} でクランプ以上にずれている`).toBe(SHELF.rowY[0] - y);
+      }
     }
+    expect(clampedBandSeen, "クランプされる帯を一度も掃引していない").toBeGreaterThan(10);
   });
 
   it("頭を掴んでも、掴んだ瞬間に段が飛ばない（持ち上げは120msかけて付く）", () => {

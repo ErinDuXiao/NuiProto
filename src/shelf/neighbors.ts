@@ -1,4 +1,4 @@
-import { SHELF } from "./shelfLayout";
+import { NEIGHBOR_BREAK_DISTANCE, NEIGHBOR_LINK_DISTANCE, SHELF } from "./shelfLayout";
 import type { PlushInstance } from "../state/types";
 
 /**
@@ -29,10 +29,16 @@ import type { PlushInstance } from "../state/types";
  * （配置に依存しない上界）。盤面全体では 個体数 * 4 / 2 本を超えない。
  */
 
-/** これ未満でリンクが「張られる」。 */
-export const NEIGHBOR_LINK_DISTANCE = 110;
-/** これを超えるとリンクが「切れる」。張る閾値より緩くしてヒステリシスを作る。 */
-export const NEIGHBOR_BREAK_DISTANCE = 124;
+/**
+ * 閾値の実体は `shelfLayout.ts` にある。
+ *
+ * 棚の配置計算（`snapPlacement` の仕様6.4「隣になれる位置を優先する」）も
+ * 同じ数値を見る必要があり、配置側がここから借りると
+ * `neighbors.ts → shelfLayout.ts → neighbors.ts` の循環になる。
+ * 数値を二重に持つ方がはるかに危険なので、定義を配置側へ寄せて
+ * ここは読み口だけを残す（既存の import はそのまま使える）。
+ */
+export { NEIGHBOR_LINK_DISTANCE, NEIGHBOR_BREAK_DISTANCE };
 
 /** togetherMs の親密度への寄与が頭打ちになるまでの時間 (ms)。 */
 const TOGETHERNESS_SATURATION_MS = 120_000;

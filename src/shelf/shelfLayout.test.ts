@@ -9,6 +9,7 @@ import {
   snapPlacement,
   DRAG_LIFT_PX,
   DROP_SETTLE_MS,
+  NEIGHBOR_LINK_DISTANCE,
   SHELF,
 } from "./shelfLayout";
 import { SHELF_CAPACITY, SHELF_ROWS, SLOT_SPACING } from "../state/persist";
@@ -194,10 +195,87 @@ describe("snapPlacement", () => {
     expect(p.reverted).toBe(true);
   });
 
+  it("定員に余裕があっても、隙間が無ければ取り消す（reverted は到達不能ではない）", () => {
+    // 「棚の定員は 12、掴んでいる本人を除けば必ず 1 枠空くので reverted は
+    // 常に false」という申し送りは**誤り**。空き枠の数ではなく、
+    // 大きい子が入れる**隙間**があるかが問題になる。
+    // 半径 34 の 2 匹を x=100 / 220 に置くと、その段の置ける範囲が
+    // 丸ごと塞がる（最低間隔 63.92 を両側で満たす x が棚の内側に無い）。
+    // 8 匹しか置いていない＝各段に 1 枠ずつ空いているのに、どこにも入れない。
+    const blocked = Array.from({ length: 8 }, (_, i) =>
+      item(`b${i}`, i % 2 === 0 ? 100 : 220, Math.floor(i / 2), 34)
+    );
+    const p = snapPlacement("newcomer", 160, 1, 34, blocked);
+    expect(p.reverted, "隙間が無いのに置けたことになっている").toBe(true);
+  });
+
   it("NaNの座標でも有限の結果を返す", () => {
     const p = snapPlacement("b", Number.NaN, Number.NaN, 32, others);
     expect(Number.isFinite(p.x)).toBe(true);
     expect(p.shelfRow).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("snapPlacement — 隣になれる位置を優先する（仕様6.4）", () => {
+  /**
+   * 並べ替えは「誰の隣に誰を置くか」を決める操作なので、隣接距離の
+   * すぐ外側へ落ちたまま確定すると、プレイヤーの意図が無言で空振りする。
+   */
+  it("隣のつもりで落としたら、隣接距離の内側に収まる", () => {
+    const others = [item("a", 60, 1, 32)];
+    // 120px 先。誰にも重ならないので、以前は 180 のまま確定していた。
+    const p = snapPlacement("b", 180, 1, 32, others);
+    expect(p.shelfRow).toBe(1);
+    expect(p.reverted).toBe(false);
+    expect(Math.abs(p.x - 60), "隣接距離の外側に置き去りにされている").toBeLessThan(
+      NEIGHBOR_LINK_DISTANCE
+    );
+  });
+
+  it("引き寄せは半径までで、狙った点をぬいぐるみが覆っている範囲を出ない", () => {
+    const others = [item("a", 60, 1, 32)];
+    const p = snapPlacement("b", 180, 1, 32, others);
+    expect(Math.abs(p.x - 180), "狙いから半径以上ずらしている").toBeLessThanOrEqual(32);
+  });
+
+  it("明らかに離れた場所を狙った Drop は引き寄せない", () => {
+    // 210px 先。隣に入れるには半径を超えて動かすしかないので、狙いが勝つ。
+    const others = [item("a", 60, 1, 32)];
+    const p = snapPlacement("b", 270, 1, 32, others);
+    expect(p.x, "狙っていない相手のほうへ勝手に寄っている").toBeCloseTo(270, 0);
+  });
+
+  it("すでに隣になれる位置なら 1px も動かさない", () => {
+    const others = [item("a", 160, 1, 32)];
+    const p = snapPlacement("b", 240, 1, 32, others);
+    expect(p.x).toBe(240);
+  });
+
+  it("誰も居ない棚では引き寄せる相手が無く、狙った位置のまま", () => {
+    const p = snapPlacement("b", 240, 1, 32, []);
+    expect(p.x).toBe(240);
+  });
+
+  it("上下の段の相手にも、隣接と同じ物差し（斜辺）で寄せる", () => {
+    // 隣接は段をまたいでも成立する（`neighbors.ts` は斜辺で測る）。
+    // 段の高さ 102 があるので、x 差 60 では hypot(60,102)=118 で届かない。
+    const below = [item("a", 160, 1, 32)];
+    const p = snapPlacement("b", 220, 0, 32, below);
+    expect(p.shelfRow).toBe(0);
+    const rowGap = SHELF.rowY[1] - SHELF.rowY[0];
+    expect(
+      Math.hypot(p.x - 160, rowGap),
+      "上下の相手には寄せていない（x 差だけで測っている）"
+    ).toBeLessThan(NEIGHBOR_LINK_DISTANCE);
+    expect(Math.abs(p.x - 220), "狙いから半径以上ずらしている").toBeLessThanOrEqual(32);
+  });
+
+  it("引き寄せた先でも他の子と重ならない", () => {
+    const others = [item("a", 60, 1, 32)];
+    const p = snapPlacement("b", 180, 1, 32, others);
+    expect(Math.abs(p.x - 60), "引き寄せた先で重なっている").toBeGreaterThanOrEqual(60);
+    expect(p.x, "棚の左端をはみ出している").toBeGreaterThanOrEqual(SHELF.frameLeft);
+    expect(p.x, "棚の右端をはみ出している").toBeLessThanOrEqual(SHELF.frameRight);
   });
 });
 
