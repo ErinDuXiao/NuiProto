@@ -4,8 +4,9 @@ import { getPlush } from "../data/plushies";
 import { pickLine } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
 import { NEUTRAL_POSE, plushTop } from "../render/pose";
+import { placeBubble } from "../render/bubble";
 import { useGame } from "../state/store";
-import type { PlushDef, PlushInstance } from "../state/types";
+import type { PlushInstance } from "../state/types";
 import { ceremonyAt, ceremonyDuration, pickHost, type CeremonyPhase } from "./ceremonyTimeline";
 import { SHELF, rowY } from "./shelfLayout";
 
@@ -182,21 +183,23 @@ export function CeremonyActors({ ceremony }: { ceremony: Ceremony }) {
       </g>
 
       {phase.hostLine && (
-        <CeremonyBubble x={host.x} y={hostY + bubbleY(hostDef)} text={phase.hostLine} />
+        <CeremonyBubble
+          anchorX={host.x}
+          headTopY={hostY + plushTop(hostDef)}
+          text={phase.hostLine}
+          others={[{ x: guest.x, headTopY: guestY + plushTop(guestDef) - phase.guestHop }]}
+        />
       )}
       {phase.guestLine && !phase.hostLine && (
         <CeremonyBubble
-          x={guest.x}
-          y={guestY + bubbleY(guestDef) - phase.guestHop}
+          anchorX={guest.x}
+          headTopY={guestY + plushTop(guestDef) - phase.guestHop}
           text={phase.guestLine}
+          others={[{ x: host.x, headTopY: hostY + plushTop(hostDef) }]}
         />
       )}
     </g>
   );
-}
-
-function bubbleY(def: PlushDef): number {
-  return plushTop(def) - 14;
 }
 
 /** 小さな粒3つ。キラキラを過剰にしない（依頼書18章）。 */
@@ -215,14 +218,40 @@ function Sparkle({ r }: { r: number }) {
   );
 }
 
-function CeremonyBubble({ x, y, text }: { x: number; y: number; text: string }) {
+/**
+ * 出会いの演出の吹き出し。位置は `placeBubble` に一本化する
+ * （依頼書 Global Constraint: 吹き出しはタップ時と出会いの演出にだけ残す）。
+ *
+ * 演出中は先輩と新入りの2匹しか登場しないので、喋っていない方の顔だけを
+ * `others` として渡せば足りる（呼び出し元の CeremonyActors 参照）。
+ */
+function CeremonyBubble({
+  anchorX,
+  headTopY,
+  text,
+  others,
+}: {
+  anchorX: number;
+  headTopY: number;
+  text: string;
+  others: { x: number; headTopY: number }[];
+}) {
   const w = Math.min(160, text.length * 13 + 22);
-  const cx = Math.max(w / 2 + 4, Math.min(SHELF.width - w / 2 - 4, x));
+  const { x, y, below } = placeBubble({
+    anchorX,
+    headTopY,
+    textWidth: w,
+    bounds: { minX: 0, maxX: SHELF.width, minY: 0 },
+    others,
+  });
+  const rectY = below ? -5 : -21;
+  const tail = below ? "M -5 -4 L 0 -11 L 5 -4 Z" : "M -5 4 L 0 11 L 5 4 Z";
+  const textY = below ? 14 : -3;
   return (
-    <g transform={`translate(${cx} ${y})`}>
-      <rect x={-w / 2} y={-21} width={w} height={26} rx={13} fill="#fffaf3" />
-      <path d="M -5 4 L 0 11 L 5 4 Z" fill="#fffaf3" />
-      <text x={0} y={-3} textAnchor="middle" fontSize={13} fill="#6b5a4e">
+    <g transform={`translate(${x} ${y})`}>
+      <rect x={-w / 2} y={rectY} width={w} height={26} rx={13} fill="#fffaf3" />
+      <path d={tail} fill="#fffaf3" />
+      <text x={0} y={textY} textAnchor="middle" fontSize={13} fill="#6b5a4e">
         {text}
       </text>
     </g>

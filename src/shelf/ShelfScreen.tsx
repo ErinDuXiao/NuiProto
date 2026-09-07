@@ -3,6 +3,7 @@ import { getPlush } from "../data/plushies";
 import { pickLine } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
 import { individuality, NEUTRAL_POSE, plushTop, type Pose } from "../render/pose";
+import { placeBubble, type BubbleNeighbor } from "../render/bubble";
 import {
   useAmbientLife,
   type AmbientTarget,
@@ -156,6 +157,21 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
   const onShelf = useMemo(
     () => game.instances.filter((o) => o.shelfRow >= 0),
     [game.instances]
+  );
+
+  /**
+   * 吹き出しに顔を隠されたくない子たちの一覧（`placeBubble` の `others`）。
+   * ドラッグ中の一時位置までは追わない — タップのリアクションはドラッグ中に
+   * 出ないので、確定位置（`o.x` / `rowY(o.shelfRow)`）だけで十分。
+   */
+  const shelfFaces = useMemo(
+    () =>
+      onShelf.map((o) => ({
+        instanceId: o.instanceId,
+        x: o.x,
+        headTopY: rowY(o.shelfRow) + plushTop(getPlush(o.plushTypeId)),
+      })),
+    [onShelf]
   );
 
   const ceremony = useCeremony(ceremonyId, !game.firstMeetingDone, (skipped) => {
@@ -475,7 +491,6 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
           const y = dragging ? drag.y : rowY(o.shelfRow);
           // 指を離したら姿勢は先に緩める。位置だけが滑っていく。
           const pose = poseFor(squashed[o.instanceId], dragging && !drag.settling);
-          const bubble = bubbles.find((b) => b.instanceId === o.instanceId);
           return (
             <g
               key={o.instanceId}
@@ -500,8 +515,31 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
                 <PlushSVG def={def} pose={pose} seed={o.personalitySeed} />
               </g>
               {o.instanceId === ringId && <WelcomeRing x={x} r={def.size} />}
-              {bubble && <Bubble x={x} y={plushTop(def) - 14} text={bubble.text} />}
             </g>
+          );
+        })}
+
+        {/*
+          吹き出しは棚に並んだ全員の最前面に出す。個々の子の `<g>` の中に
+          置くと、吹き出しの重なり順がその子の描画順に縛られて、あとから
+          描かれた別の子の下に隠れることがある。`placeBubble` は絶対座標
+          （部屋の SVG の座標系そのもの）を返すので、ここで独立に描く。
+        */}
+        {onShelf.map((o) => {
+          if (ceremony.stagedIds.has(o.instanceId)) return null;
+          const bubble = bubbles.find((b) => b.instanceId === o.instanceId);
+          if (!bubble) return null;
+          const dragging = drag?.instanceId === o.instanceId && drag.moved;
+          if (dragging) return null; // ドラッグ中はタップのリアクションを出さない
+          const def = getPlush(o.plushTypeId);
+          return (
+            <ShelfBubble
+              key={`${o.instanceId}-bubble`}
+              anchorX={o.x}
+              headTopY={rowY(o.shelfRow) + plushTop(def)}
+              text={bubble.text}
+              others={shelfFaces.filter((f) => f.instanceId !== o.instanceId)}
+            />
           );
         })}
       </svg>
@@ -672,15 +710,63 @@ function WelcomeRing({ x, r }: { x: number; r: number }) {
   );
 }
 
-function Bubble({ x, y, text }: { x: number; y: number; text: string }) {
+/**
+ * タップのリアクションの吹き出し。位置は `placeBubble` に一本化する
+ * （依頼書 Global Constraint: 吹き出しはタップ時と出会いの演出にだけ残す）。
+ * 顔に被らないよう他の子たちを `others` として渡すのはここだけ — 出会いの
+ * 演出は登場する2匹しかいないので避ける相手を意識する必要がなく、見守りは
+ * 常に1匹だけなのでやはり不要。棚は複数の子が並ぶので唯一これが要る。
+ */
+function ShelfBubble({
+  anchorX,
+  headTopY,
+  text,
+  others,
+}: {
+  anchorX: number;
+  headTopY: number;
+  text: string;
+  others: BubbleNeighbor[];
+}) {
   const w = Math.min(150, text.length * 12 + 20);
+  const { x, y, below } = placeBubble({
+    anchorX,
+    headTopY,
+    textWidth: w,
+    bounds: { minX: 0, maxX: SHELF.width, minY: 0 },
+    others,
+  });
+  return <SpeechBubble x={x} y={y} below={below} width={w} text={text} />;
+}
+
+/**
+ * 吹き出しの見た目そのもの。`below` で上向き／下向きのしっぽを切り替える
+ * ——`placeBubble` が上端が窮屈なときに下側へ回した結果を、絵として裏切らない
+ * ため（下に出しているのに上向きのしっぽのままでは、何を指しているか読めない）。
+ */
+function SpeechBubble({
+  x,
+  y,
+  below,
+  width,
+  text,
+}: {
+  x: number;
+  y: number;
+  below: boolean;
+  width: number;
+  text: string;
+}) {
+  const rectY = below ? -4 : -20;
+  const tail = below ? "M -5 -3 L 0 -10 L 5 -3 Z" : "M -5 3 L 0 10 L 5 3 Z";
+  const textY = below ? 13 : -3;
   return (
-    <g transform={`translate(${Math.max(w / 2 + 4, Math.min(SHELF.width - w / 2 - 4, x))} ${y})`}>
-      <rect x={-w / 2} y={-20} width={w} height={24} rx={12} fill="#fffaf3" opacity={0.96} />
-      <path d="M -5 3 L 0 10 L 5 3 Z" fill="#fffaf3" opacity={0.96} />
+    <g transform={`translate(${x} ${y})`}>
+      <rect x={-width / 2} y={rectY} width={width} height={24} rx={12} fill="#fffaf3" opacity={0.96} />
+      <path d={tail} fill="#fffaf3" opacity={0.96} />
       <text
         x={0}
-        y={-3}
+        y={textY}
         textAnchor="middle"
         fontSize={12}
         fill="#6b5a4e"
