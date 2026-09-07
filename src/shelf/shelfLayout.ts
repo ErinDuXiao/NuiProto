@@ -19,6 +19,43 @@ export const SHELF = {
 
 export { PER_ROW };
 
+/**
+ * ドラッグ中、ぬいぐるみを指の何 px 上に描くか（仕様6.1）。
+ *
+ * 最大の景品の直径は 72px（size 34 × 個体差 1.05 の半径 35.7）。その半径より
+ * 大きく取ることで、足元を掴んでいる指が顔まで届かない。段の間隔 102px の
+ * 半分（51px）より小さくもしておく — ここを超えると、指をまったく動かして
+ * いないのに持ち上げただけで一段上へ吸着してしまう。
+ */
+export const DRAG_LIFT_PX = 46;
+
+/** 指を離してから確定位置へ滑り込むまでの時間 (ms)。仕様6.3。 */
+export const DROP_SETTLE_MS = 180;
+
+/**
+ * いま指がある高さ `y` に、半径 `r` の子を降ろせるか（仕様6.2）。
+ *
+ * 降ろせるなら段の番号、降ろせないなら `null`。ドラッグ中の「置ける場所が
+ * 分かる」影は、この戻り値がそのまま影を出す段になる。
+ *
+ * `others` には**掴んでいる本人を含めない**こと。含めると、元の段へ戻す
+ * だけの操作でその段が満杯に見え、影が消える。
+ *
+ * 段をまたいだ振り替え（満杯なら空いている段へ逃がす）は `snapPlacement` の
+ * 仕事であって、ここではしない。影は「いま指がある段に置けるか」だけを
+ * 答える — 指が段Aにあるのに段Bに影が出ては、置ける場所を示すどころか
+ * 嘘をつくことになる。
+ */
+export function landingRowFor(y: number, r: number, others: Placed[]): number | null {
+  const row = rowFromY(y);
+  const inRow = others.filter((o) => o.shelfRow === row);
+  if (inRow.length >= PER_ROW) return null;
+  // 定員に空きがあっても、大きい子は既にいる子の隙間に入れないことがある。
+  // 段の中央から左右へ探して、どこにも空きが無ければ置けない。
+  const [lo, hi] = bounds(r);
+  return pushOut((lo + hi) / 2, r, inRow) === null ? null : row;
+}
+
 /** 棚の内側に収まる x に丸める。 */
 export function clampToShelf(x: number, r: number): number {
   const min = Math.min(r, SHELF.width / 2);

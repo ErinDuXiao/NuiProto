@@ -1,5 +1,16 @@
 import { describe, it, expect } from "vitest";
-import { clampToShelf, defaultSlot, resolveOverlaps, rowCapacity, rowFromY, snapPlacement, SHELF } from "./shelfLayout";
+import {
+  clampToShelf,
+  defaultSlot,
+  landingRowFor,
+  resolveOverlaps,
+  rowCapacity,
+  rowFromY,
+  snapPlacement,
+  DRAG_LIFT_PX,
+  DROP_SETTLE_MS,
+  SHELF,
+} from "./shelfLayout";
 import { SHELF_CAPACITY, SHELF_ROWS, SLOT_SPACING } from "../state/persist";
 
 describe("clampToShelf", () => {
@@ -187,5 +198,53 @@ describe("snapPlacement", () => {
     const p = snapPlacement("b", Number.NaN, Number.NaN, 32, others);
     expect(Number.isFinite(p.x)).toBe(true);
     expect(p.shelfRow).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("landingRowFor", () => {
+  it("空いている段を返す", () => {
+    expect(landingRowFor(SHELF.rowY[1], 32, [])).toBe(1);
+  });
+
+  it("満杯の段には置けない（null を返す）", () => {
+    const full = Array.from({ length: 3 }, (_, i) => item(`f${i}`, 78 + i * 82, 1, 34));
+    expect(landingRowFor(SHELF.rowY[1], 34, full)).toBeNull();
+  });
+
+  it("範囲外の y でも有効な段か null を返す", () => {
+    for (const y of [-9999, 9999, Number.NaN]) {
+      const r = landingRowFor(y, 32, []);
+      expect(r === null || (r >= 0 && r < SHELF.rows)).toBe(true);
+    }
+  });
+
+  it("他の段が満杯でも、狙っている段が空いていれば置ける", () => {
+    // 段をまたいだ振り替えは snapPlacement の仕事。影は「いま指がある段」だけを見る。
+    const full = Array.from({ length: 3 }, (_, i) => item(`f${i}`, 78 + i * 82, 0, 34));
+    expect(landingRowFor(SHELF.rowY[1], 34, full)).toBe(1);
+  });
+
+  it("自分自身を数えない（others に自分を含めないのは呼び出し側の責任）", () => {
+    // 掴んでいる子を除いた 2 匹しかいない段は、まだ空いている。
+    // ここに自分を数え込むと、元の段へ戻すだけの操作で影が消える。
+    const others = [item("a", 78, 1, 34), item("b", 160, 1, 34)];
+    expect(landingRowFor(SHELF.rowY[1], 34, others)).toBe(1);
+  });
+});
+
+describe("ドラッグの持ち上げ量", () => {
+  it("最大の景品の半径より大きい（指で顔が隠れない）", () => {
+    // 最大 size 34 × 個体差 1.05 = 35.7
+    expect(DRAG_LIFT_PX).toBeGreaterThan(36);
+  });
+
+  it("段の間隔の半分より小さい（持ち上げただけで段が変わらない）", () => {
+    const gap = SHELF.rowY[1] - SHELF.rowY[0];
+    expect(DRAG_LIFT_PX).toBeLessThan(gap / 2);
+  });
+
+  it("Drop の滑走時間が、待たされない長さに収まっている", () => {
+    expect(DROP_SETTLE_MS).toBeGreaterThan(0);
+    expect(DROP_SETTLE_MS).toBeLessThanOrEqual(240);
   });
 });

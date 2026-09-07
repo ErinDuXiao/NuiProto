@@ -451,17 +451,37 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
 
         <CeremonyActors ceremony={ceremony} />
 
+        {/*
+          着地予定の段に出る淡い影（仕様6.2）。置けない段では出さない。
+          ぬいぐるみより先に描いて、必ず足元の下に来るようにする。
+        */}
+        {drag?.moved && drag.landingRow !== null && (
+          <LandingShadow
+            x={drag.x}
+            y={rowY(drag.landingRow)}
+            r={getPlush(
+              onShelf.find((o) => o.instanceId === drag.instanceId)?.plushTypeId ?? "bear_01"
+            ).size}
+          />
+        )}
+
         {onShelf.map((o) => {
           if (ceremony.stagedIds.has(o.instanceId)) return null;
           const def = getPlush(o.plushTypeId);
           const dragging = drag?.instanceId === o.instanceId && drag.moved;
           const x = dragging ? drag.x : o.x;
-          const row = dragging ? drag.shelfRow : o.shelfRow;
-          const y = rowY(row);
-          const pose = poseFor(squashed[o.instanceId], dragging);
+          // ドラッグ中の y はフックが持っている。持ち上がったあとは
+          // 必ず棚板の上面ラインで、Drop のあとは確定位置へ滑る。
+          const y = dragging ? drag.y : rowY(o.shelfRow);
+          // 指を離したら姿勢は先に緩める。位置だけが滑っていく。
+          const pose = poseFor(squashed[o.instanceId], dragging && !drag.settling);
           const bubble = bubbles.find((b) => b.instanceId === o.instanceId);
           return (
-            <g key={o.instanceId} transform={`translate(0 ${y})`} opacity={dragging ? 0.92 : 1}>
+            <g
+              key={o.instanceId}
+              transform={`translate(0 ${y})`}
+              opacity={dragging && !drag.settling ? 0.92 : 1}
+            >
               <g
                 ref={(el) => {
                   // React は外すときに null を渡す。消さないと棚から居なくなった
@@ -616,6 +636,21 @@ function Room() {
       <ellipse cx={w / 2 - 30} cy={h + 34} rx={92} ry={13} fill="#ddcdb6" />
       <ellipse cx={w / 2 - 30} cy={h + 34} rx={62} ry={8} fill="#e6d9c6" />
     </g>
+  );
+}
+
+/**
+ * ドラッグ中、着地予定の棚板に出る淡い楕円の影（仕様6.2）。
+ *
+ * 「置ける場所が分かる」ためだけの印。枠や格子に見えないよう、
+ * 輪郭のない影ひとつに留める（依頼書4章A: 棚を一覧に見せない）。
+ */
+function LandingShadow({ x, y, r }: { x: number; y: number; r: number }) {
+  // ぬいぐるみ自身の影（PlushSVG: rx ≒ r*0.84, ry = r*0.15）より一回り
+  // 大きく、平たくする。同じ大きさだと自前の影に紛れて、着地点を
+  // 示しているのか単に立っているのかが見分けられない。
+  return (
+    <ellipse cx={x} cy={y + 3} rx={r * 1.28} ry={r * 0.3} fill="#8f7350" opacity={0.2} />
   );
 }
 
