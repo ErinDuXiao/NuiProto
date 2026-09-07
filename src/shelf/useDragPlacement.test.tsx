@@ -291,8 +291,10 @@ describe("useDragPlacement — 指で隠れない × 棚板から浮かない（
     move(s.x + 10, rowY(s.row));
     tick(200);
 
-    // 段の吸着で最大 (段間隔/2) だけ下へずれるが、持ち上げ量を引いた分しか
-    // 指に近づかない。ぬいぐるみの高さ（72px）には遠く届かない。
+    // 段の吸着で最大 (段間隔/2 = 51px) だけ下へずれるが、持ち上げ量 46px を
+    // 引いた **5px** しか指に近づかない。指が入るのは胴（72px）の最下部
+    // 5px であって、顔には決して届かない。この 5px は仕様の数値
+    // （46 < 51）が抱えている残差なので、境界値としてここに固定しておく。
     const slack = (SHELF.rowY[1] - SHELF.rowY[0]) / 2 - DRAG_LIFT_PX;
     for (let y = 260; y <= 520; y += 7) {
       move(s.x + 10, y);
@@ -420,6 +422,35 @@ describe("useDragPlacement — Drop でジャンプしない（仕様6.3）", ()
     expect(() => cleanup()).not.toThrow();
     expect(posOf(s.id).x, "滑走の途中で置き場所が失われた").toBeCloseTo(s.x + 60, 0);
     expect(() => tick(DROP_SETTLE_MS * 2)).not.toThrow();
+  });
+
+  it("rAF が一度も回らなくても、滑走は時間で必ず畳まれる", () => {
+    // タブが隠れると rAF は止まる。終わり方が rAF の中だけにあると、
+    // 棚は「ドラッグ中」のまま固まり、環境アニメーションも隣接の
+    // 再計算も再開しない。保険のタイマーは**離した時点**で張らなければ
+    // ならない — 掴んだ時点で張ると、少し長いドラッグで空振りして消える。
+    vi.useFakeTimers();
+    try {
+      render(<Harness />);
+      const s = starter();
+      down(grab(s.id), s.x, rowY(s.row));
+      move(s.x + 40, rowY(s.row));
+      // ゆっくり並べ替える人。掴んでから離すまで数秒かかる。
+      act(() => {
+        vi.advanceTimersByTime(6000);
+      });
+      move(s.x + 60, rowY(s.row));
+      up(s.x + 60, rowY(s.row));
+      expect(lastDrag!.settling, "滑走が始まっていない").toBeTruthy();
+
+      // rAF は 1 フレームも回さない
+      act(() => {
+        vi.advanceTimersByTime(10_000);
+      });
+      expect(lastDrag, "滑走が終わらずドラッグが残り続けている").toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("滑走中でも次のドラッグを受け付ける", () => {

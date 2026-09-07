@@ -124,6 +124,16 @@ function hasRaf(): boolean {
  * **「どの段を選ぶかの基準」** に入れているため。唯一の例外が掴んだ直後の
  * 120ms で、ここだけは掴んだ位置から段の上面ラインへ連続に寄せる
  * （いきなり吸着させると、掴んだ瞬間に飛び上がる）。
+ *
+ * **残差について。** 段の吸着は最大で段間隔の半分（102/2 = 51px）だけ下へ
+ * ずれるので、持ち上げ 46px を差し引いた **5px** だけ、足元が指より下に
+ * 来る帯が段の境目に残る。指が入るのは 72px の胴の最下部 5px であって、
+ * 顔（足元から 40px 以上）には決して届かない — 仕様6.1 が持ち上げ量の
+ * 根拠として挙げているのも「顔が確実に見える」ことである。
+ * これを 0 にするには持ち上げを 51px 以上にするしかないが、そうすると
+ * **指を動かしていないのに掴んだだけで一段上へ吸着してしまう**
+ * （`rowFromY` は最寄りを選ぶため）。46 < 51 はその二択の結果であり、
+ * 5px の残差は仕様の数値そのものが抱えている。
  */
 function poseOf(live: Live, t: number): { x: number; y: number; row: number } {
   if (live.settle) {
@@ -167,6 +177,15 @@ export function useDragPlacement({ instances, svgRef, enabled, onTap }: Options)
   const liveRef = useRef<Live | null>(null);
   /** いま張っている購読と rAF を畳む手続き。生きている間だけ入っている */
   const stopRef = useRef<(() => void) | null>(null);
+  /**
+   * 滑走が rAF 頼みで終わらなくなったときの保険（`end` で張る）。
+   *
+   * タブが隠れると rAF は止まる。終わり方が rAF の中だけにあると、棚は
+   * 「ドラッグ中」のまま固まり、環境アニメーションも隣接の再計算も
+   * 再開しない。**掴んだ時点ではなく離した時点で張る** — 掴んだ時点で
+   * 張ると、少し長いドラッグ（数秒）で滑走の前に空振りして消えてしまう。
+   */
+  const settleGuardRef = useRef(0);
   /** 直前に React へ渡した値。同じなら setState しない（無駄な再レンダーを避ける） */
   const lastRef = useRef<DragState>(null);
 
@@ -215,10 +234,14 @@ export function useDragPlacement({ instances, svgRef, enabled, onTap }: Options)
     []
   );
 
-  /** 購読・rAF・状態を全部畳む。何度呼んでも安全。 */
+  /** 購読・rAF・保険・状態を全部畳む。何度呼んでも安全。 */
   const finish = useCallback(() => {
     stopRef.current?.();
     stopRef.current = null;
+    if (settleGuardRef.current) {
+      clearTimeout(settleGuardRef.current);
+      settleGuardRef.current = 0;
+    }
     liveRef.current = null;
     lastRef.current = null;
     setDrag(null);
@@ -337,7 +360,18 @@ export function useDragPlacement({ instances, svgRef, enabled, onTap }: Options)
       };
       apply(t);
       // rAF が無い環境では滑らせようがない。確定位置に居るので即座に畳む。
-      if (!hasRaf()) finish();
+      if (!hasRaf()) {
+        finish();
+        return;
+      }
+      // 滑走が rAF 頼みで終わらなくなったときの保険。ここで張るのが要点
+      // （settleGuardRef のコメント）。確定位置は保存済みなので、
+      // 時間で畳んでしまって構わない。
+      if (settleGuardRef.current) clearTimeout(settleGuardRef.current);
+      settleGuardRef.current = window.setTimeout(() => {
+        settleGuardRef.current = 0;
+        if (liveRef.current?.settle) finish();
+      }, DROP_SETTLE_MS * 4);
     },
     [apply, finish, othersOf]
   );
@@ -393,26 +427,11 @@ export function useDragPlacement({ instances, svgRef, enabled, onTap }: Options)
     window.addEventListener("pointercancel", onCancel);
     if (hasRaf()) raf = requestAnimationFrame(frame);
 
-    /**
-     * 滑走が rAF 頼みのままだと、タブが隠れて rAF が止まった瞬間に
-     * ドラッグが**永久に終わらない**。棚は「ドラッグ中」を見て環境
-     * アニメーションと隣接の再計算を止めているので、そこで固まると
-     * 関係が二度と更新されない。確定位置は既に保存済みなので、
-     * 時間で畳んでしまって構わない。
-     */
-    const guard =
-      typeof window.setTimeout === "function"
-        ? window.setTimeout(() => {
-            if (liveRef.current?.settle) finish();
-          }, DROP_SETTLE_MS * 6)
-        : 0;
-
     stopRef.current = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
       if (raf && typeof cancelAnimationFrame === "function") cancelAnimationFrame(raf);
-      window.clearTimeout(guard);
     };
   }, [apply, end, finish, toLocal]);
 
