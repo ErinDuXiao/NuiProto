@@ -3,8 +3,8 @@ import { sfx } from "../audio/sfx";
 import { getPlush } from "../data/plushies";
 import { pickLine } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
-import { NEUTRAL_POSE, plushTop } from "../render/pose";
-import { placeBubble } from "../render/bubble";
+import { NEUTRAL_POSE, plushTopOf } from "../render/pose";
+import { bubbleShape, placeBubble } from "../render/bubble";
 import { useGame } from "../state/store";
 import type { PlushInstance } from "../state/types";
 import { ceremonyAt, ceremonyDuration, pickHost, type CeremonyPhase } from "./ceremonyTimeline";
@@ -151,6 +151,16 @@ export function CeremonyActors({ ceremony }: { ceremony: Ceremony }) {
   const hostY = rowY(host.shelfRow);
   const lookDir = Math.sign(guest.x - host.x) || 1;
 
+  /**
+   * 実際に描かれている頭のてっぺん。個体差の拡縮 (`plushTopOf`) と、
+   * その瞬間の跳ね (`hostHop` / `guestHop`) を両方反映する。
+   * 先輩は `hostLine` を出している最中（greet 〜 settle）にちょうど
+   * `hostHop` で跳ねるので、これを無視すると吹き出しだけが取り残される。
+   * 新入りの `guestDrop` は着地後 0 なので、セリフが出る窓では効かない。
+   */
+  const hostTopY = hostY + plushTopOf(hostDef, host.personalitySeed) - phase.hostHop;
+  const guestTopY = guestY + plushTopOf(guestDef, guest.personalitySeed) - phase.guestHop;
+
   return (
     <g>
       {/* 先輩。新入りの方を向いて、つられて少し跳ねる */}
@@ -185,17 +195,17 @@ export function CeremonyActors({ ceremony }: { ceremony: Ceremony }) {
       {phase.hostLine && (
         <CeremonyBubble
           anchorX={host.x}
-          headTopY={hostY + plushTop(hostDef)}
+          headTopY={hostTopY}
           text={phase.hostLine}
-          others={[{ x: guest.x, headTopY: guestY + plushTop(guestDef) - phase.guestHop }]}
+          others={[{ x: guest.x, headTopY: guestTopY }]}
         />
       )}
       {phase.guestLine && !phase.hostLine && (
         <CeremonyBubble
           anchorX={guest.x}
-          headTopY={guestY + plushTop(guestDef) - phase.guestHop}
+          headTopY={guestTopY}
           text={phase.guestLine}
-          others={[{ x: host.x, headTopY: hostY + plushTop(hostDef) }]}
+          others={[{ x: host.x, headTopY: hostTopY }]}
         />
       )}
     </g>
@@ -244,12 +254,11 @@ function CeremonyBubble({
     bounds: { minX: 0, maxX: SHELF.width, minY: 0 },
     others,
   });
-  const rectY = below ? -5 : -21;
-  const tail = below ? "M -5 -4 L 0 -11 L 5 -4 Z" : "M -5 4 L 0 11 L 5 4 Z";
-  const textY = below ? 14 : -3;
+  // 絵の寸法は placeBubble と同じ定数から導く。手で書くと余白の見積りとずれる。
+  const { rectY, height, tail, textY } = bubbleShape(below);
   return (
     <g transform={`translate(${x} ${y})`}>
-      <rect x={-w / 2} y={rectY} width={w} height={26} rx={13} fill="#fffaf3" />
+      <rect x={-w / 2} y={rectY} width={w} height={height} rx={height / 2} fill="#fffaf3" />
       <path d={tail} fill="#fffaf3" />
       <text x={0} y={textY} textAnchor="middle" fontSize={13} fill="#6b5a4e">
         {text}

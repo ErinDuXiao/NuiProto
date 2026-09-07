@@ -1,8 +1,8 @@
 import { getPlush } from "../data/plushies";
 import { LINES, pickLine, type LineKey } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
-import { plushTop } from "../render/pose";
-import { placeBubble } from "../render/bubble";
+import { plushTopOf } from "../render/pose";
+import { bubbleShape, placeBubble } from "../render/bubble";
 import type { PlushInstance } from "../state/types";
 import { lineKeyFor, watcherPose, type WatcherMood } from "./watcherState";
 
@@ -16,21 +16,41 @@ type Props = {
 };
 
 /**
+ * 見守りの `<svg>` の寸法。
+ *
+ * **ここが唯一の定義。** `ArcadeScreen.tsx` の `<svg className="watcher">` の
+ * viewBox と `<g transform="translate(0 …)">` もこれを使う。このリポジトリは
+ * 過去に棚のレイアウト定数を二重に持って二度事故を起こしている
+ * （`shelfLayout.ts` / `persist.ts` のコメント参照）。ここも同じ形で、
+ * 片方だけ直しても何のエラーも出ず、見守りの吹き出しだけが静かに画面外へ
+ * 出るか顔に乗るという壊れ方をする。
+ */
+export const WATCHER_VIEW = {
+  width: 200,
+  height: 120,
+  /** ぬいぐるみの足元ライン（viewBox 上端からの距離）。 */
+  baseY: 112,
+  /** ぬいぐるみを置く x。 */
+  x: 52,
+} as const;
+
+/**
+ * 吹き出しが出てよい範囲（足元原点、上が負）。見守りは常に1匹だけなので
+ * `others` は空でよい（避けるべき他の子の顔が存在しない）。
+ */
+const WATCHER_BOUNDS = {
+  minX: 0,
+  maxX: WATCHER_VIEW.width,
+  minY: -WATCHER_VIEW.baseY,
+};
+
+/**
  * 見守りぬいぐるみ（依頼書 8 章）。
  *
  * クレーン盤面の手前に、プレイヤーが既に持っている子を 1 匹置く。
  * この子が居ることで「景品を取る」が「この子に友達を連れて帰る」になる。
  * 落としたときも 0.8 秒で立ち直り、悲しみを引きずらせない。
  */
-/**
- * 見守りの `<svg>` の viewBox（ArcadeScreen.tsx の `<svg className="watcher"
- * viewBox="0 0 200 120">` と、その中の `<g transform="translate(0 112)">`）
- * をここでも使う。見守りは常に1匹だけなので `others` は空でよい
- * （避けるべき他の子の顔が存在しない）。
- */
-const WATCHER_X = 52;
-const WATCHER_BOUNDS = { minX: 0, maxX: 200, minY: -112 };
-
 export function Watcher({ plush, mood, elapsed, moodCount }: Props) {
   const def = getPlush(plush.plushTypeId);
   const pose = watcherPose(mood, elapsed);
@@ -40,12 +60,17 @@ export function Watcher({ plush, mood, elapsed, moodCount }: Props) {
 
   return (
     <g>
-      <g transform="translate(52 0)">
+      <g transform={`translate(${WATCHER_VIEW.x} 0)`}>
         <PlushSVG def={def} pose={pose} seed={plush.personalitySeed} />
         {mood === "success" && <Sparkle r={def.size} />}
       </g>
       {showLine && (
-        <Bubble anchorX={WATCHER_X} headTopY={plushTop(def) - pose.hop} text={line} />
+        <Bubble
+          anchorX={WATCHER_VIEW.x}
+          // 個体差の拡縮を含めた実寸の頭のてっぺん。跳ねている分だけ上へ。
+          headTopY={plushTopOf(def, plush.personalitySeed) - pose.hop}
+          text={line}
+        />
       )}
     </g>
   );
@@ -84,12 +109,11 @@ function Bubble({
     bounds: WATCHER_BOUNDS,
     others: [],
   });
-  const rectY = below ? -5 : -21;
-  const tail = below ? "M -5 -4 L 0 -11 L 5 -4 Z" : "M -5 4 L 0 11 L 5 4 Z";
-  const textY = below ? 14 : -3;
+  // 絵の寸法は placeBubble と同じ定数から導く。手で書くと余白の見積りとずれる。
+  const { rectY, height, tail, textY } = bubbleShape(below);
   return (
     <g transform={`translate(${x} ${y})`}>
-      <rect x={-w / 2} y={rectY} width={w} height={26} rx={13} fill="#fffaf3" />
+      <rect x={-w / 2} y={rectY} width={w} height={height} rx={height / 2} fill="#fffaf3" />
       <path d={tail} fill="#fffaf3" />
       <text x={0} y={textY} textAnchor="middle" fontSize={13} fill="#6b5a4e">
         {text}

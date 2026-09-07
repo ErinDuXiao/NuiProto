@@ -1,6 +1,15 @@
 import { describe, it, expect } from "vitest";
-import { individuality, applyIndividuality, shiftHue, NEUTRAL_POSE, lerp, lerpPose } from "./pose";
-import { getPlush } from "../data/plushies";
+import {
+  individuality,
+  applyIndividuality,
+  shiftHue,
+  NEUTRAL_POSE,
+  lerp,
+  lerpPose,
+  plushTop,
+  plushTopOf,
+} from "./pose";
+import { getPlush, PLUSHIES } from "../data/plushies";
 
 describe("individuality", () => {
   it("seedが違えば別の個体差になる", () => {
@@ -206,5 +215,34 @@ describe("lerp", () => {
     expect(mid.squash).toBeCloseTo(0.75);
     expect(mid.tilt).toBeCloseTo(5);
     expect(mid.hop).toBeCloseTo(10);
+  });
+});
+
+describe("plushTopOf", () => {
+  it("個体差の拡縮を通した頭のてっぺんを返す", () => {
+    // 吹き出しの配置はこちらを使う。素の plushTop は個体差ぶん（±5%）
+    // 頭上の余白を読み違える。
+    for (const def of PLUSHIES) {
+      for (const seed of [0, 0.19, 0.5, 0.87]) {
+        expect(plushTopOf(def, seed)).toBeCloseTo(plushTop(applyIndividuality(def, seed)), 10);
+      }
+    }
+  });
+
+  it("拡縮の分だけ素の plushTop からずれる", () => {
+    const def = getPlush("bear_01");
+    let maxDiff = 0;
+    for (let i = 0; i < 200; i++) {
+      maxDiff = Math.max(maxDiff, Math.abs(plushTopOf(def, i / 200) - plushTop(def)));
+    }
+    // クマ（頭のてっぺん 74px）で 5% なら 3.7px。見守りの上下の分岐を変える大きさ。
+    expect(maxDiff).toBeGreaterThan(3);
+  });
+
+  it("壊れた seed でも有限の値を返す", () => {
+    const def = getPlush("rabbit_01");
+    for (const seed of [Number.NaN, Number.POSITIVE_INFINITY, -1e12]) {
+      expect(Number.isFinite(plushTopOf(def, seed))).toBe(true);
+    }
   });
 });

@@ -12,7 +12,7 @@ import {
   type CraneEvent,
 } from "./craneMachine";
 import { atRest, DEFAULT_PIT, exitDistance, step, STEP, type Body } from "./physics";
-import { Watcher } from "./Watcher";
+import { Watcher, WATCHER_VIEW } from "./Watcher";
 import { moodFor, type WatcherMood } from "./watcherState";
 
 type Props = {
@@ -311,8 +311,14 @@ export function ArcadeScreen({ onGoShelf, debugPhysics, showFps }: Props) {
           )}
         </svg>
 
-        <svg className="watcher" viewBox="0 0 200 120" aria-hidden="true">
-          <g transform="translate(0 112)">
+        {/* viewBox と足元ラインは Watcher.tsx の WATCHER_VIEW が唯一の定義。
+            ここに数値を書き写すと、吹き出しの配置計算とだけ食い違う。 */}
+        <svg
+          className="watcher"
+          viewBox={`0 0 ${WATCHER_VIEW.width} ${WATCHER_VIEW.height}`}
+          aria-hidden="true"
+        >
+          <g transform={`translate(0 ${WATCHER_VIEW.baseY})`}>
             {frame && watcher && (
               <Watcher
                 plush={watcher}

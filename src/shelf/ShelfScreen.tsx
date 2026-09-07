@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getPlush } from "../data/plushies";
 import { pickLine } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
-import { individuality, NEUTRAL_POSE, plushTop, type Pose } from "../render/pose";
-import { placeBubble, type BubbleNeighbor } from "../render/bubble";
+import { individuality, NEUTRAL_POSE, plushTopOf, type Pose } from "../render/pose";
+import { bubbleShape, placeBubble, type BubbleNeighbor } from "../render/bubble";
 import {
   useAmbientLife,
   type AmbientTarget,
@@ -169,7 +169,7 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
       onShelf.map((o) => ({
         instanceId: o.instanceId,
         x: o.x,
-        headTopY: rowY(o.shelfRow) + plushTop(getPlush(o.plushTypeId)),
+        headTopY: rowY(o.shelfRow) + plushTopOf(getPlush(o.plushTypeId), o.personalitySeed),
       })),
     [onShelf]
   );
@@ -536,7 +536,7 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
             <ShelfBubble
               key={`${o.instanceId}-bubble`}
               anchorX={o.x}
-              headTopY={rowY(o.shelfRow) + plushTop(def)}
+              headTopY={rowY(o.shelfRow) + plushTopOf(def, o.personalitySeed)}
               text={bubble.text}
               others={shelfFaces.filter((f) => f.instanceId !== o.instanceId)}
             />
@@ -757,12 +757,19 @@ function SpeechBubble({
   width: number;
   text: string;
 }) {
-  const rectY = below ? -4 : -20;
-  const tail = below ? "M -5 -3 L 0 -10 L 5 -3 Z" : "M -5 3 L 0 10 L 5 3 Z";
-  const textY = below ? 13 : -3;
+  // 絵の寸法は placeBubble と同じ定数から導く。手で書くと余白の見積りとずれる。
+  const { rectY, height, tail, textY } = bubbleShape(below);
   return (
     <g transform={`translate(${x} ${y})`}>
-      <rect x={-width / 2} y={rectY} width={width} height={24} rx={12} fill="#fffaf3" opacity={0.96} />
+      <rect
+        x={-width / 2}
+        y={rectY}
+        width={width}
+        height={height}
+        rx={height / 2}
+        fill="#fffaf3"
+        opacity={0.96}
+      />
       <path d={tail} fill="#fffaf3" opacity={0.96} />
       <text
         x={0}

@@ -225,6 +225,22 @@ export function plushTop(def: PlushDef): number {
 }
 
 /**
+ * 個体差のサイズ倍率まで含めた、**実際に描かれる**頭のてっぺんの y。
+ *
+ * WHY: `PlushSVG` は `applyIndividuality` を通した ±5% のサイズで描くのに、
+ * 吹き出しの配置に素の `plushTop(def)` を渡すと、その差（クマで約4px）が
+ * そのまま「頭上に何 px 空いているか」の見積り誤差になる。天井が近い
+ * 見守り（足元から 112px しか上が無い）では、その4pxが「上に出す／下に出す」
+ * の分岐をひっくり返し、吹き出しを目の上に落とす。
+ * 吹き出しやリングを頭に被せないための計算には必ずこちらを使うこと。
+ */
+export function plushTopOf(def: PlushDef, seed: number): number {
+  // 倍率を掛けるのではなく applyIndividuality を通す。plushTop が size に対して
+  // 線形であることに依存すると、将来 plushTop の式が変わったときに黙ってずれる。
+  return plushTop(applyIndividuality(def, seed));
+}
+
+/**
  * 個体差を反映した表示用の PlushDef を返す。元の定義は決して変更しない。
  * 呼び出し側は毎フレームこれを呼ぶのではなく、必要なときだけ使うこと。
  */
