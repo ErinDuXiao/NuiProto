@@ -28,12 +28,23 @@
  * 持ち込まない。
  */
 
-/** 吹き出しを避けさせたい、他の子の顔の位置。 */
-export type BubbleNeighbor = {
-  x: number;
-  /** その子の頭のてっぺんの絶対 y。 */
-  headTopY: number;
-};
+import type { PlushDef } from "../state/types";
+import { applyIndividuality, type Pose } from "./pose";
+
+export type BubbleBox = { left: number; right: number; top: number; bottom: number };
+
+/**
+ * 吹き出しに隠させたくない、他の子の顔。
+ *
+ * - `{ face }`: 実際に描かれる顔の箱（`plushFaceBox` で作る）。**呼び出し側は
+ *   原則こちらを渡す。** 種類・個体差・姿勢が分かっていれば、顔の位置は
+ *   正確に出せるので、見積りで避ける理由がない。
+ * - `{ x, headTopY }`: 相手の種類が分からないとき。どの種類のどの姿勢の顔も
+ *   覆う安全側の箱（`UNKNOWN_FACE`）として扱う。広めに見るぶん、実際には
+ *   被っていないのに避けることがある — 分からないものを楽観的に扱って顔に
+ *   乗せるよりはよい。
+ */
+export type BubbleNeighbor = { face: BubbleBox } | { x: number; headTopY: number };
 
 /** 吹き出しが出てよい範囲。 */
 export type BubbleBounds = {
@@ -100,8 +111,10 @@ const BODY_H = BUBBLE_SHAPE.bodyTop + BUBBLE_SHAPE.bodyBottom;
  * なので、そのまま表情を隠す。一方てっぺん側にあるのは耳や頭の丸みで、
  * 少し隠れても表情は死なない。
  *
- * どの種類・どの個体差でも「頭のてっぺん → 目の上端」は 14px 以上ある
- * （耳の無い blob 体型のカエル・くらげが最小）。10px なら目には届かない。
+ * どの種類・どの個体差・どのムードでも「頭のてっぺん → 目の上端」は
+ * 最小 13.971px（傾きによる目の持ち上がりを含む。耳の無い blob 体型の
+ * カエル・くらげが最小。seed 3000 点 × 全ムードの独立した再計算による値）。
+ * 10px なら目には届かないが、**余裕は 4px ではなく 3.97px しかない。**
  * この余裕は `bubble.test.ts` の「全種類 × 個体差の両端 × 全ムード」の
  * 総当たりで実測して見張っている。
  */
@@ -114,13 +127,6 @@ const HEAD_ROOM = 10;
  */
 const MIN_SPACE_ABOVE = BODY_H - HEAD_ROOM;
 
-/** 他の子の顔として避ける横幅（半径）。個体ごとのサイズ差を吸収する概算値。 */
-const FACE_HALF_W = 50;
-/** 他の子の顔として避ける縦の届き。頭のてっぺんから下へこれだけを顔とみなす。 */
-const FACE_REACH_Y = 90;
-/** 横へ逃がすときの刻み。 */
-const STEP = 8;
-
 /** 有限でなければ既定値へ落とす。保存データや演出タイマーの計算誤差で NaN が来ても描画を壊さない。 */
 function finite(v: number, fallback: number): number {
   return Number.isFinite(v) ? v : fallback;
@@ -132,70 +138,258 @@ function clampX(x: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, x));
 }
 
+/* ------------------------------------------------------------------ *
+ * 顔の箱
+ * ------------------------------------------------------------------ */
+
 /**
- * `x` に置いたとき、他の子の顔ボックスへ横からどれだけ食い込むかの合計 (px)。
- * 0 なら誰にも被っていない。
+ * `PlushSVG` の SHAPE_RATIO の写し。
+ *
+ * WHY 写しなのか: `PlushSVG` は React のコンポーネントで、この純粋な
+ * モジュールから import すると React を引き込む。写しがずれると顔の箱が
+ * 静かに嘘をつくので、`bubble.test.ts` が**実際に `PlushSVG` をレンダリング
+ * して目の属性を読み**、この関数の出す箱と突き合わせて見張っている。
  */
-function penetration(x: number, y: number, halfW: number, others: BubbleNeighbor[]): number {
-  let sum = 0;
-  for (const o of others) {
-    if (!Number.isFinite(o?.x) || !Number.isFinite(o?.headTopY)) continue;
-    if (Math.abs(y - o.headTopY) >= FACE_REACH_Y) continue;
-    const clear = halfW + FACE_HALF_W;
-    const d = Math.abs(x - o.x);
-    if (d < clear) sum += clear - d;
+const SHAPE_RATIO: Record<PlushDef["art"]["shape"], { x: number; y: number }> = {
+  round: { x: 1.0, y: 1.0 },
+  pear: { x: 0.92, y: 1.04 },
+  long: { x: 0.8, y: 1.18 },
+  blob: { x: 1.1, y: 0.88 },
+};
+
+/**
+ * `pose.tilt` の分だけ顔の箱を広げる量。
+ *
+ * `PlushSVG` の傾きは胴の中心を軸にした回転なので、目は主に左右へ振れる
+ * （最大 12°・軸から約 40px で 8px 強）。上端が持ち上がる量は 1px 未満。
+ * 回転を厳密に解く代わりに、その上限を常に足して安全側に倒す
+ * （判定を緩めるのではなく厳しくする方向の近似）。
+ */
+const TILT_MARGIN_X = 9;
+const TILT_MARGIN_Y = 2;
+
+/**
+ * 実際に描かれる顔（両目）の当たり判定の箱（絶対座標）。
+ *
+ * `x` / `footY` はその子の足元の絶対座標。`PlushSVG` と同じく
+ * `applyIndividuality` を通したサイズで、`pose` の潰れ・目の開き・視線・
+ * 跳ねを反映する。**顔として守るのは目**: 表情はまず目で読まれ、
+ * 吹き出しは上から来るので、口より先に必ず目に掛かる。
+ */
+export function plushFaceBox(
+  def: PlushDef,
+  seed: number,
+  pose: Pose,
+  x: number,
+  footY: number
+): BubbleBox {
+  const d = applyIndividuality(def, seed);
+  const r = d.size;
+  const ratio = SHAPE_RATIO[d.art.shape] ?? SHAPE_RATIO.round;
+  const rx = r * ratio.x * (2 - pose.squash);
+  const ry = r * ratio.y * pose.squash;
+  const cy = -ry;
+  const eyeR = 3.4;
+  // 目を閉じているときは高さ 1.6 の線（<rect y={eyeY-0.8} height={1.6}>）になる。
+  const eyeRy = pose.eyeOpen > 0.08 ? eyeR * pose.eyeOpen : 0.8;
+  const eyeY = cy - ry * 0.14;
+  const eyeX = rx * 0.32;
+  const eyeDx = pose.lookAt * rx * 0.12;
+  // hop は PlushSVG が外側の <g translate(0 -hop)> で掛ける。
+  return {
+    left: x - eyeX + eyeDx - eyeR - TILT_MARGIN_X,
+    right: x + eyeX + eyeDx + eyeR + TILT_MARGIN_X,
+    top: footY + eyeY - eyeRy - pose.hop - TILT_MARGIN_Y,
+    bottom: footY + eyeY + eyeRy - pose.hop + TILT_MARGIN_Y,
+  };
+}
+
+/**
+ * 種類の分からない相手の顔を、頭のてっぺんからの相対でどこまで見るか。
+ *
+ * どの種類・個体差の両端・実際に使われる姿勢（見守りの全ムード、出会いの
+ * 演出、タップの潰れ）の `plushFaceBox` も、この箱の内側に収まる。
+ * `bubble.test.ts` がカタログ全体で見張っているので、種類を足してはみ出したら
+ * テストが落ちる — そのときはここを広げる（狭い方へ直すと顔に乗る）。
+ */
+export const UNKNOWN_FACE = {
+  /** 頭のてっぺんから目の箱の上端まで（下向き正）。実測の最小は 11.94px。 */
+  top: 11,
+  /** 頭のてっぺんから目の箱の下端まで。実測の最大は 80.79px（ミルクラビット）。 */
+  bottom: 82,
+  /** 中心から目の箱の端まで。実測の最大は 29.26px。 */
+  halfW: 30,
+} as const;
+
+function neighborFace(o: BubbleNeighbor): BubbleBox | null {
+  if (o === null || typeof o !== "object") return null;
+  let box: BubbleBox;
+  if ("face" in o) {
+    box = o.face;
+  } else {
+    box = {
+      left: o.x - UNKNOWN_FACE.halfW,
+      right: o.x + UNKNOWN_FACE.halfW,
+      top: o.headTopY + UNKNOWN_FACE.top,
+      bottom: o.headTopY + UNKNOWN_FACE.bottom,
+    };
   }
+  const ok =
+    box !== null &&
+    typeof box === "object" &&
+    Number.isFinite(box.left) &&
+    Number.isFinite(box.right) &&
+    Number.isFinite(box.top) &&
+    Number.isFinite(box.bottom);
+  return ok ? box : null;
+}
+
+/** 吹き出しの本体（不透明な角丸矩形）の絶対座標の箱。 */
+function bodyBox(x: number, y: number, below: boolean, halfW: number): BubbleBox {
+  const rectY = below ? -BUBBLE_SHAPE.bodyBottom : -BUBBLE_SHAPE.bodyTop;
+  return { left: x - halfW, right: x + halfW, top: y + rectY, bottom: y + rectY + BODY_H };
+}
+
+/** 2つの箱が重なっている面積 (px²)。接しているだけなら 0。 */
+function overlapArea(a: BubbleBox, b: BubbleBox): number {
+  const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  return w > 0 && h > 0 ? w * h : 0;
+}
+
+/**
+ * 本体を `x` に置いたとき、他の子の顔の箱と重なる面積の合計 (px²)。
+ *
+ * WHY 面積なのか: 以前はここを「吹き出しの先端 y と相手の頭のてっぺんの
+ * 距離が 90px 未満なら、横に ±50px を顔とみなす」という代理指標で測って
+ * いた。同じ段の隣は頭のてっぺんの高さがほぼ同じなので、本体が相手の目より
+ * ずっと上にあっても常に「被っている」と判定され、出会いの演出では
+ * 何にも被っていない吹き出しが 15〜32px 押しのけられていた。
+ * 本物の本体の箱と本物の顔の箱を交差させれば、重なっていないときは
+ * 厳密に 0 になり、動く理由が無くなる。
+ */
+function penetration(
+  x: number,
+  y: number,
+  below: boolean,
+  halfW: number,
+  faces: BubbleBox[]
+): number {
+  const body = bodyBox(x, y, below, halfW);
+  let sum = 0;
+  for (const f of faces) sum += overlapArea(body, f);
   return sum;
 }
 
 /**
- * 誰の顔にも被らない x を探す。
- *
- * **完全に避けられないときは「いちばん食い込みが小さい x」を返す。**
- * WHY: 以前は「完全に避けられる候補が無ければ元の位置をそのまま返す」
- * 実装だったが、実際に起きる配置ではそれが常に起きていた。棚のスロット
- * 間隔は 82px、完全に避けるのに要る幅は `halfW + 50`（吹き出しが広いと
- * 113px）で、部屋の幅 320px の内側には条件を満たす x が存在しない。
- * つまり出会いの演出でも満席の段でも、この回避は一度も働かないまま
- * 黙って諦めていた（機能があるように見えて何もしない、がいちばん悪い）。
- * 食い込み量が最小の x を選べば、完全には避けられなくても必ず顔から
- * 遠い方へ寄る。`lo`/`hi` の外へは出ないので画面外にも出ない。
+ * 顔の箱から、ちょうど離れた位置に置くときに空ける隙間 (px)。
+ * 箱の縁にぴったり接する位置は浮動小数の丸めで 1e-14 程度だけ重なることがあるので、
+ * 必ず少しだけ外に置く。
  */
-function resolveX(
-  base: number,
+const CLEARANCE = 1;
+
+/**
+ * 誰の顔にも被らない位置を探す。
+ *
+ * **重なりを厳密に減らせるときだけ動く。** 今の位置で重なりが 0 なら
+ * 1px も動かさない。候補は重なりが真に小さいときだけ採り、同点なら
+ * 元の位置から近い方を残す。
+ *
+ * 探し方は2段階:
+ *
+ * 1. **横にずらす。** 喋っている子の頭の上という関係はそのまま保てる。
+ * 2. 横だけでは消せないときに限り、**自分の頭の方へ下げる**（上出しのみ、
+ *    `HEAD_ROOM` まで）。WHY: 背の高い子（耳の長いミルクラビット）の
+ *    真上の段に子が並んでいると、上の段の目がちょうど吹き出しの高さに来る。
+ *    上の段が埋まっていれば部屋の幅 320px の中に横の逃げ場は無く、横だけの
+ *    回避では吹き出しが上の子の目に乗ったままになる（全10種 × 全スロットの
+ *    総当たりで実際に見つかった）。下げる量は天井へのクランプと同じ
+ *    `HEAD_ROOM` の範囲に留めるので、自分の目には決して届かない。
+ *    横を先にするのは、下げると自分の頭のてっぺんに乗り、その余裕
+ *    （目まで 3.97px）を使うことになるため。横で済むなら横で済ませる。
+ *    下出しのときは縦に動かさない — 下出しになるのは天井が迫っている
+ *    ときだけで、上にも下にも余白が無い。
+ *
+ * **完全に避けられないときは「いちばん重なりが小さい位置」を返す。**
+ * 完全には避けられなくても必ず顔から遠い方へ寄る。`lo`/`hi` の外へは
+ * 出ないので画面外にも出ない。
+ *
+ * 候補は刻みで舐めるのではなく、重なり面積の折れ目（本体の縁が顔の箱の
+ * 縁と揃う位置。顔から離れる側は `CLEARANCE` だけ外）と範囲の端だけを試す。
+ * 重なり面積は x についても y についても折れ線なので、最小値は折れ目か端で
+ * 取る — 以前の 8px 刻みのように、刻み幅の都合で「避けられるのに避けない」
+ * 「必要以上に遠くへ飛ぶ」が起きない（例外は、顔と顔の隙間が本体より
+ * `CLEARANCE` 未満しか広くない場合で、そのときは接する位置の代わりに
+ * 1px 未満だけ重なる位置になりうる）。
+ */
+function resolvePosition(
+  baseX: number,
+  baseY: number,
   halfW: number,
   lo: number,
   hi: number,
-  y: number,
-  others: BubbleNeighbor[]
-): number {
-  if (others.length === 0) return base;
+  maxY: number,
+  below: boolean,
+  faces: BubbleBox[]
+): { x: number; y: number } {
+  const stay = { x: baseX, y: baseY };
+  if (faces.length === 0) return stay;
+  let best = penetration(baseX, baseY, below, halfW, faces);
+  if (best === 0) return stay;
 
-  let bestX = base;
-  let best = penetration(base, y, halfW, others);
-  if (best === 0) return base;
+  // 本体の上端・下端が y からどれだけ離れているか（bodyBox と同じ）。
+  const up = below ? BUBBLE_SHAPE.bodyBottom : BUBBLE_SHAPE.bodyTop;
+  const down = BODY_H - up;
 
-  /** 候補を評価する。完全に避けられたら true。 */
-  const consider = (cand: number): boolean => {
-    if (!(cand >= lo && cand <= hi)) return false;
-    const p = penetration(cand, y, halfW, others);
-    // 同点なら先に見た方（= base に近い方）を残す。無駄に遠くへ飛ばさない。
-    if (p < best) {
-      best = p;
-      bestX = cand;
+  // 顔から離れる側の折れ目（本体の縁が顔の箱の縁に接する位置）は、ぴったりでは
+  // なく CLEARANCE だけ外を試す。ぴったりの位置は計算の順序しだいで 1e-14 だけ
+  // 重なる側に転ぶ — 実際、独立に書いた顔の箱で検査すると「接しているだけ」が
+  // 「被った」と判定された。顔の中へ入る側の折れ目は重なりの台の角なので、
+  // 最小値を取りこぼさないようにぴったりのまま試す。
+  const xs = [baseX];
+  if (lo <= hi) {
+    xs.push(lo, hi);
+    for (const f of faces) {
+      xs.push(
+        f.left - halfW - CLEARANCE,
+        f.right + halfW + CLEARANCE,
+        f.left + halfW,
+        f.right - halfW
+      );
     }
-    return p === 0;
+  }
+  const xCands = xs.filter((x) => x === baseX || (x >= lo && x <= hi));
+
+  const ys = [baseY];
+  if (!below && maxY > baseY) {
+    ys.push(maxY);
+    for (const f of faces) {
+      ys.push(f.bottom + up + CLEARANCE, f.top - down - CLEARANCE, f.top + up, f.bottom - down);
+    }
+  }
+  const yCands = ys.filter((y) => y === baseY || (y >= baseY && y <= maxY));
+
+  let bestPos = stay;
+  let bestMove = 0;
+  const consider = (x: number, y: number) => {
+    const p = penetration(x, y, below, halfW, faces);
+    const move = Math.abs(x - baseX) + Math.abs(y - baseY);
+    if (p < best || (p === best && move < bestMove)) {
+      best = p;
+      bestPos = { x, y };
+      bestMove = move;
+    }
   };
 
-  const span = Math.max(1, hi - lo);
-  for (let d = STEP; d <= span; d += STEP) {
-    if (consider(base + d)) return bestX;
-    if (consider(base - d)) return bestX;
+  // 1. 横だけ。
+  for (const x of xCands) consider(x, baseY);
+  if (best === 0) return bestPos;
+  // 2. 横で消せなければ、頭の方へ下げる（下げつつ横にずらす組み合わせも含む）。
+  for (const y of yCands) {
+    if (y === baseY) continue;
+    for (const x of xCands) consider(x, y);
   }
-  // 刻みの都合で端そのものは試されないことがある。端まできっちり逃げられるように。
-  consider(lo);
-  consider(hi);
-  return bestX;
+  return bestPos;
 }
 
 /**
@@ -205,7 +399,9 @@ function resolveX(
  *    下へずらして収める（`HEAD_ROOM` までは頭のてっぺんに乗ってよい）。
  * 2. それでも収まらないほど頭上が狭ければ下側へ回す（`below: true`）。
  * 3. 横は喋っている子の真上を基準に、`bounds` の内側へ収める。
- * 4. その位置が他の子の顔に被るなら、いちばん被らない位置へ横へずらす。
+ * 4. その位置で本体が他の子の顔の箱と実際に重なるときだけ、いちばん
+ *    重ならない位置へずらす（まず横、横で消せなければ `HEAD_ROOM` の範囲で
+ *    自分の頭の方へ下げる）。重なっていなければ一切動かさない。
  */
 export function placeBubble(opts: PlaceBubbleOptions): BubblePlacement {
   const { bounds, others } = opts;
@@ -217,14 +413,22 @@ export function placeBubble(opts: PlaceBubbleOptions): BubblePlacement {
   const spaceAbove = headTopY - bounds.minY;
   const below = spaceAbove < MIN_SPACE_ABOVE;
   // 上出しは本体の上端が、下出しはしっぽの先が、それぞれ天井にぶつかる。
-  const y = below
+  const baseY = below
     ? Math.max(bounds.minY + BUBBLE_SHAPE.tail, headTopY + GAP)
     : Math.max(bounds.minY + BUBBLE_SHAPE.bodyTop, headTopY - GAP);
+  // 顔を避けるために下げてよい限界。本体の下端が頭のてっぺんから
+  // `HEAD_ROOM` までしか食い込まない位置（天井へのクランプと同じ保証）。
+  const maxY = headTopY + HEAD_ROOM - BUBBLE_SHAPE.bodyBottom;
 
   const lo = bounds.minX + halfW;
   const hi = bounds.maxX - halfW;
   const clampedAnchor = clampX(anchorX, lo, hi);
-  const x = resolveX(clampedAnchor, halfW, lo, hi, y, others);
+  const faces: BubbleBox[] = [];
+  for (const o of Array.isArray(others) ? others : []) {
+    const f = neighborFace(o);
+    if (f) faces.push(f);
+  }
+  const { x, y } = resolvePosition(clampedAnchor, baseY, halfW, lo, hi, maxY, below, faces);
 
   return { x, y, below };
 }
@@ -257,8 +461,6 @@ export function bubbleShape(below: boolean): {
   };
 }
 
-export type BubbleBox = { left: number; right: number; top: number; bottom: number };
-
 /**
  * 実際に描かれる吹き出しの矩形（絶対座標）。
  *
@@ -272,13 +474,8 @@ export function bubbleBoxes(
   textWidth: number
 ): { body: BubbleBox; outer: BubbleBox } {
   const halfW = Math.max(10, finite(textWidth, 80)) / 2;
-  const { rectY, height } = bubbleShape(p.below);
-  const body = {
-    left: p.x - halfW,
-    right: p.x + halfW,
-    top: p.y + rectY,
-    bottom: p.y + rectY + height,
-  };
+  // 回避の判定（penetration）と同じ箱。見積りと検証で別の式を持たない。
+  const body = bodyBox(p.x, p.y, p.below, halfW);
   const tailY = p.y + (p.below ? -BUBBLE_SHAPE.tail : BUBBLE_SHAPE.tail);
   return {
     body,

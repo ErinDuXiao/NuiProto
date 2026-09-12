@@ -3,7 +3,7 @@ import { getPlush } from "../data/plushies";
 import { pickLine } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
 import { individuality, NEUTRAL_POSE, plushTopOf, type Pose } from "../render/pose";
-import { bubbleShape, placeBubble, type BubbleNeighbor } from "../render/bubble";
+import { bubbleShape, placeBubble, plushFaceBox, type BubbleNeighbor } from "../render/bubble";
 import {
   useAmbientLife,
   type AmbientTarget,
@@ -160,7 +160,12 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
   );
 
   /**
-   * 吹き出しに顔を隠されたくない子たちの一覧（`placeBubble` の `others`）。
+   * 吹き出しに顔を隠されたくない子たちの、実際に描かれる顔の箱
+   * （`placeBubble` の `others`）。
+   *
+   * 頭の位置だけを渡すと `placeBubble` は種類を知らないので、どの種類の顔も
+   * 覆う広い箱で避けることになり、何にも被っていない吹き出しまで押しのける。
+   * 種類・個体差はここで分かっているので、本物の顔の箱を渡す。
    * ドラッグ中の一時位置までは追わない — タップのリアクションはドラッグ中に
    * 出ないので、確定位置（`o.x` / `rowY(o.shelfRow)`）だけで十分。
    */
@@ -168,8 +173,13 @@ export function ShelfScreen({ onGoArcade, onShare, onSecretTap }: Props) {
     () =>
       onShelf.map((o) => ({
         instanceId: o.instanceId,
-        x: o.x,
-        headTopY: rowY(o.shelfRow) + plushTopOf(getPlush(o.plushTypeId), o.personalitySeed),
+        face: plushFaceBox(
+          getPlush(o.plushTypeId),
+          o.personalitySeed,
+          NEUTRAL_POSE,
+          o.x,
+          rowY(o.shelfRow)
+        ),
       })),
     [onShelf]
   );
@@ -713,9 +723,8 @@ function WelcomeRing({ x, r }: { x: number; r: number }) {
 /**
  * タップのリアクションの吹き出し。位置は `placeBubble` に一本化する
  * （依頼書 Global Constraint: 吹き出しはタップ時と出会いの演出にだけ残す）。
- * 顔に被らないよう他の子たちを `others` として渡すのはここだけ — 出会いの
- * 演出は登場する2匹しかいないので避ける相手を意識する必要がなく、見守りは
- * 常に1匹だけなのでやはり不要。棚は複数の子が並ぶので唯一これが要る。
+ * 棚は複数の子が並ぶので、自分以外の全員の顔の箱を `others` として渡す
+ * （上の段の子も含む — 背の高い子の吹き出しは真上の段の子の目の高さに届く）。
  */
 function ShelfBubble({
   anchorX,

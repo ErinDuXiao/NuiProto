@@ -3,8 +3,8 @@ import { sfx } from "../audio/sfx";
 import { getPlush } from "../data/plushies";
 import { pickLine } from "../data/lines";
 import { PlushSVG } from "../render/PlushSVG";
-import { NEUTRAL_POSE, plushTopOf } from "../render/pose";
-import { bubbleShape, placeBubble } from "../render/bubble";
+import { NEUTRAL_POSE, plushTopOf, type Pose } from "../render/pose";
+import { bubbleShape, placeBubble, plushFaceBox, type BubbleNeighbor } from "../render/bubble";
 import { useGame } from "../state/store";
 import type { PlushInstance } from "../state/types";
 import { ceremonyAt, ceremonyDuration, pickHost, type CeremonyPhase } from "./ceremonyTimeline";
@@ -161,43 +161,47 @@ export function CeremonyActors({ ceremony }: { ceremony: Ceremony }) {
   const hostTopY = hostY + plushTopOf(hostDef, host.personalitySeed) - phase.hostHop;
   const guestTopY = guestY + plushTopOf(guestDef, guest.personalitySeed) - phase.guestHop;
 
+  // 姿勢は描画と吹き出しの回避で同じものを使う。別々に書くと、避けている
+  // 顔と描かれている顔が静かにずれる。
+  const hostPose: Pose = {
+    ...NEUTRAL_POSE,
+    lookAt: phase.hostLook * lookDir,
+    tilt: phase.hostLook * lookDir * 5,
+    hop: phase.hostHop,
+  };
+  const guestPose: Pose = {
+    ...NEUTRAL_POSE,
+    squash: phase.guestSquash,
+    hop: phase.guestDrop + phase.guestHop,
+    lookAt: phase.guestHop > 0 ? -lookDir * 0.6 : 0,
+  };
+
   return (
     <g>
       {/* 先輩。新入りの方を向いて、つられて少し跳ねる */}
       <g transform={`translate(${host.x} ${hostY})`}>
-        <PlushSVG
-          def={hostDef}
-          pose={{
-            ...NEUTRAL_POSE,
-            lookAt: phase.hostLook * lookDir,
-            tilt: phase.hostLook * lookDir * 5,
-            hop: phase.hostHop,
-          }}
-          seed={host.personalitySeed}
-        />
+        <PlushSVG def={hostDef} pose={hostPose} seed={host.personalitySeed} />
       </g>
 
       {/* 新入り。上から落ちて、ころんと着地して、跳ねる */}
       <g transform={`translate(${guest.x} ${guestY})`}>
-        <PlushSVG
-          def={guestDef}
-          pose={{
-            ...NEUTRAL_POSE,
-            squash: phase.guestSquash,
-            hop: phase.guestDrop + phase.guestHop,
-            lookAt: phase.guestHop > 0 ? -lookDir * 0.6 : 0,
-          }}
-          seed={guest.personalitySeed}
-        />
+        <PlushSVG def={guestDef} pose={guestPose} seed={guest.personalitySeed} />
         {phase.sparkle && <Sparkle r={guestDef.size} />}
       </g>
 
+      {/*
+        喋っていない方の、実際に描かれている顔の箱を渡す。頭の位置だけを
+        渡すと種類が分からず広い箱で避けることになり、隣に並んだだけの相手
+        から、何にも被っていない吹き出しを押しのけてしまう。
+      */}
       {phase.hostLine && (
         <CeremonyBubble
           anchorX={host.x}
           headTopY={hostTopY}
           text={phase.hostLine}
-          others={[{ x: guest.x, headTopY: guestTopY }]}
+          others={[
+            { face: plushFaceBox(guestDef, guest.personalitySeed, guestPose, guest.x, guestY) },
+          ]}
         />
       )}
       {phase.guestLine && !phase.hostLine && (
@@ -205,7 +209,9 @@ export function CeremonyActors({ ceremony }: { ceremony: Ceremony }) {
           anchorX={guest.x}
           headTopY={guestTopY}
           text={phase.guestLine}
-          others={[{ x: host.x, headTopY: hostTopY }]}
+          others={[
+            { face: plushFaceBox(hostDef, host.personalitySeed, hostPose, host.x, hostY) },
+          ]}
         />
       )}
     </g>
@@ -244,7 +250,7 @@ function CeremonyBubble({
   anchorX: number;
   headTopY: number;
   text: string;
-  others: { x: number; headTopY: number }[];
+  others: BubbleNeighbor[];
 }) {
   const w = Math.min(160, text.length * 13 + 22);
   const { x, y, below } = placeBubble({
